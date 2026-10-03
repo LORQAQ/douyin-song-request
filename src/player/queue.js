@@ -61,7 +61,7 @@ class SongQueue {
   }
 
   /** 新点歌：先入队占位，稍后补上搜索结果 */
-  createEntry({ song, nickname, userId, message = '' }) {
+  createEntry({ song, nickname, userId, message = '', artist = '', title = '' }) {
     const entry = {
       id: uid('song'),
       song,
@@ -69,6 +69,13 @@ class SongQueue {
       nickname: nickname || '观众',
       userId: String(userId || nickname || 'unknown'),
       message,
+      /**
+       * 「歌手 - 歌名」格式的解析结果（解析器给的）。
+       * 横线前是歌手、后是歌名 —— 唯一的歌手指定格式。
+       * 不是这个格式时两者都是空串，搜索退回纯歌名 + 平台数据。
+       */
+      artist: artist || '',
+      title: title || '',
       status: STATUS.SEARCHING,
       createdAt: Date.now(),
       startedAt: 0,

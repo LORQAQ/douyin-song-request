@@ -1284,24 +1284,28 @@ class BilibiliClient {
     let score;
     let confLabel;
     const thirdParty = (scored[0].trust.notes || []).includes('第三方杂锦');
+    const artistMismatch = Boolean(artist) && !artistOk;
     if (isExactHit && artistOk) {
       score = 1300;
       confLabel = '精确命中';
-    } else if (isExactHit) {
+    } else if (isExactHit && artistMismatch) {
       /**
-       * 【标题精确，但没有"歌手本人"背书】给**负分**。
+       * 【标题精确，但归属歌手和平台说的原唱不一致】给负分。
        *
-       * 为什么是负分而不是"中等的 300 分"：
-       *   300 分会**压死搜索结果**。实测「夜曲」：
-       *   索引里记的是「索尼音乐中国 · 夜曲 · 227s」，但那个 bvid 实际是
-       *   「典藏音乐」发的【神仙打架】杂锦合集 P2；搜索路径找到的候选分数
-       *   都在 100~250 之间，于是这个 300 分的错误条目一路胜出。
+       * 实测「点歌 Heart - Alone」：搜索词是「Heart Alone」，
+       * 本地索引里 Alan Walker《Alone》的合集条目被命中，
+       * 而平台原唱判定是 Rentz —— 歌手完全对不上，却因为"标题精确"拿了 1060 分
+       * （合集加成），把真正想要的 Heart 版本压下去了。
        *
-       * 给负分意味着：**只有在实在没有别的选择时才会用它**（有兜底）。
-       * 归属歌手字段本身就是自动抓取的，有噪声，不该凭它拿任何优势。
+       * 归属歌手字段本身是自动抓取的、有噪声，不该凭它拿任何优势。
+       * 给负分 = 只有在实在没有别的选择时才用它（有兜底）。
        */
       score = -500;
-      confLabel = thirdParty ? '第三方杂锦合集·降权' : '标题精确但归属非歌手本人·降权';
+      confLabel = thirdParty ? '第三方杂锦·歌手不符·降权' : '歌手与原唱不符·降权';
+    } else if (isExactHit) {
+      // 平台没给出原唱（artist 为空），无从判断归属 → 保持中性偏低
+      score = 300;
+      confLabel = '标题精确（无原唱可核对）';
     } else if (artistOk) {
       score = 420; // 模糊命中但歌手对
       confLabel = '模糊命中（歌手相符）';
@@ -1742,10 +1746,25 @@ class BilibiliClient {
     const dash = text.match(/^([A-Za-z][A-Za-z.\s]{2,24})\s*[-–—]\s*([\s\S]{2,})$/);
     if (dash) hints.push(dash[1].trim());
 
-    // 空格分隔：「周杰伦 晴天」或「晴天 周杰伦」——两个词都收进来
-    const spaced = text.match(/^([\u4e00-\u9fa5A-Za-z]{2,5})\s+的?\s*([\u4e00-\u9fa5A-Za-z0-9]{2,})$/);
-    if (spaced) {
-      hints.push(spaced[1], spaced[2]);
+    /**
+     * 空格分隔：「周杰伦 晴天」「晴天 周杰伦」「Alone Heart」「Alone Alan Walker」
+     *
+     * 【原来的正则太窄】只支持"两个词、每词 2~5 字符"：
+     *   `^([\u4e00-\u9fa5A-Za-z]{2,5})\s+的?\s*([\u4e00-\u9fa5A-Za-z0-9]{2,})$`
+     * 于是多词歌手名直接识别不出来 —— 实测「Alone Alan Walker」返回空的线索，
+     * 「Alan Walker」这个关键信息被整个丢掉，只能听天由命。
+     *
+     * 现在改成：按空格切成所有片段，每个长度 >= 2 的都作为候选提示，
+     * 上限 4 个（防止超长标题塞一堆噪声）。
+     * 调用方本来就只用它们做"标题/UP主里是否出现"的包含判断，
+     * 多给几个候选是安全的 —— 真正决定选谁的是核验和时长。
+     */
+    const parts = text
+      .split(/\s+/)
+      .map((x) => x.trim())
+      .filter((x) => x.length >= 2);
+    if (parts.length >= 2) {
+      hints.push(...parts.slice(0, 4));
     }
 
     // 去重 + 过滤掉明显是歌名本身/太短的
@@ -2064,18 +2083,71 @@ class BilibiliClient {
       }
     }
 
+    /**
+     * 【第一步之三·「歌手 - 歌名」格式】
+     *
+     * **横线前面是歌手，后面是歌名** —— 这是唯一被采用的歌手指定格式。
+     * 别的写法（空格分隔等）一律不解析歌手，退回纯歌名搜索。
+     *
+     * 为什么是硬规则而不是启发式：之前用「首字母大写」「不在官方歌名里」
+     * 之类去猜哪边是歌手，在同名不同歌的场景（Alone/Stay/Hello）反复出错。
+     * 一个明确的格式约定比一堆猜测可靠得多，行为也可预测。
+     *
+     * 解析器已经按这个约定切好了（`options.artist` / `options.title`），
+     * 这里把「歌手 + 歌名」两个词都搜一遍，让候选池同时包含两种写法的结果。
+     */
+    const fmtArtist = String(options.artist || '').trim();
+    const fmtTitle = String(options.title || '').trim();
+    if (fmtArtist && fmtTitle && this.config.dashArtistSearch !== false) {
+      try {
+        const kw = `${fmtArtist} ${fmtTitle}`;
+        const dr = await this._searchRawWithKeyword(fmtTitle, kw);
+        const cands = (dr.candidates || []).slice(0, 8);
+        if (cands.length) {
+          this.logger.info(`🔖 按「歌手 - 歌名」解析：歌手「${fmtArtist}」/ 歌名「${fmtTitle}」→ 补搜到 ${cands.length} 个候选`);
+          const seen = new Set((search.candidates || []).map((c) => c.bvid));
+          const extra = cands.filter((c) => !seen.has(c.bvid));
+          if (extra.length) {
+            search = { ...search, candidates: (search.candidates || []).concat(extra) };
+          }
+        }
+      } catch (err) {
+        this.logger.debug(`「歌手 - 歌名」补搜失败（忽略）：${err.message}`);
+      }
+    }
+
     // 【第二步】用「歌手 + 歌名」**补搜一次**，把原唱版本拉进候选池。
     //
     // 为什么无条件补搜、而不只是「没找到歌手版本时才补」：
     // 实测「夜曲」——B站自己搜出来的前几名全是鬼畜/AI/哈基米版，
     // 真正的「【4K修复】周杰伦 - 夜曲」被挤到后面去了。
     // 加上歌手名再搜一次才能把它捞出来。
-    if (meta && meta.artist && this.config.artistRetrySearch !== false) {
-      const kw = `${meta.artist} ${meta.songName || song}`;
+    //
+    // 【但观众的显式指定优先于平台猜测】
+    // 实测「点歌 Alone Heart」：观众的 Heart 被抽成了歌手线索，可平台把原唱
+    // 判成了 Rentz（另一首同名的电音），于是补搜用的是「Rentz Alone」，
+    // 观众明确要的 Heart 版本根本没被搜出来，最后放了 Rentz 那首。
+    // 所以：观众写了歌手名时，用它来补搜和打分，而不是用平台的。
+    /**
+     * 歌手名的来源（`歌手 - 歌名` 格式优先）：
+     *   ① options.artist —— 解析器按「歌手 - 歌名」切出来的，**唯一被采用的指定格式**
+     *   ② 音乐平台判定的原唱 —— 兜底，数据经常错
+     *      （实测 Alone→Rentz、打上花火→中文翻唱、突然的自我→黄小琥）
+     *
+     * 注意：观众**只用空格**写歌手名（「点歌 晴天 周杰伦」）时**不解析歌手**，
+     * 按约定退回纯歌名搜索，由平台数据兜底。
+     */
+    const userArtist = fmtArtist;
+    const searchArtist = userArtist || (meta && meta.artist) || '';
+    if (searchArtist && this.config.artistRetrySearch !== false) {
+      const kw = `${searchArtist} ${(meta && meta.songName) || song}`;
       try {
         const retry = await this._searchRawWithKeyword(song, kw);
         if (retry.candidates && retry.candidates.length) {
-          this.logger.debug(`用「${kw}」补搜到 ${retry.candidates.length} 个候选`);
+          this.logger.debug(
+            `用「${kw}」补搜到 ${retry.candidates.length} 个候选` +
+              (userArtist ? '（用观众指定的歌手）' : '')
+          );
           const seen = new Set((search.candidates || []).map((c) => c.bvid));
           const extra = retry.candidates.filter((c) => !seen.has(c.bvid));
           if (extra.length) {
@@ -2089,9 +2161,11 @@ class BilibiliClient {
       }
     }
 
-    // 【第三步】用原唱歌手重新打分排序（不含时长门槛，那一步要等B站核验之后再算）
-    if (meta) {
-      search = this._applyOriginalMeta(search, meta);
+    // 【第三步】用原唱歌手重新打分排序（不含时长门槛，那一步要等B站核验之后再算）。
+    // 观众显式指定了歌手时，用他指定的那个来打分（平台的可能是错的）。
+    if (meta || userArtist) {
+      const useMeta = userArtist && meta ? { ...meta, artist: userArtist, artistFromUser: true } : meta;
+      if (useMeta) search = this._applyOriginalMeta(search, useMeta);
     }
 
     // 【第四步·以B站为准】读B站自己标注的标签/简介，做事实核验。
@@ -2206,6 +2280,44 @@ class BilibiliClient {
           )}`
         );
       }
+    }
+
+    /**
+     * 【最后一道关·歌手是硬约束】
+     *
+     * 放在**这里**而不是前面，是因为白名单合集（第二步之二）、热门歌手合集
+     * （第四步之三）、本地索引候选（第三步之末）都会往候选池里插人，
+     * 而且它们带的分很高（合集 1060 / 索引 1300），足以压过一切。
+     *
+     * 实测「点歌 Heart - Alone」：歌手明明填了 Heart，结果还是选了
+     * 「『Alan walker』教主的电音神曲MV合集 · P3 Alone」（1060 分），
+     * 和 Heart 毫无关系 —— 硬约束必须在**所有候选都到齐之后**执行。
+     *
+     * 只重罚不删除：万一观众把歌手名写错（比如写成中文译名），
+     * 至少还有兜底，不会因为一个格式小错就什么都点不出来。
+     */
+    if (fmtArtist && search.candidates && search.candidates.length) {
+      const al = fmtArtist.toLowerCase();
+      let hit = 0;
+      const reweighted = search.candidates.map((c) => {
+        const blob = `${c.title || ''} ${c.owner || c.author || ''} ${c.officialTitle || ''}`.toLowerCase();
+        if (blob.includes(al)) {
+          hit += 1;
+          return {
+            ...c,
+            score: (Number(c.score) || 0) + 200,
+            reasons: (c.reasons || []).concat([`指定歌手「${fmtArtist}」`]),
+          };
+        }
+        return {
+          ...c,
+          score: (Number(c.score) || 0) - 800,
+          reasons: (c.reasons || []).concat([`未提及指定歌手「${fmtArtist}」`]),
+        };
+      });
+      reweighted.sort((a, b) => (b.score || 0) - (a.score || 0));
+      search = { ...search, candidates: reweighted };
+      this.logger.info(`🔖 指定歌手「${fmtArtist}」：${hit}/${reweighted.length} 个候选提到了他`);
     }
 
     if (!search.candidates.length) {

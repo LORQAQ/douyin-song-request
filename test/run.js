@@ -595,12 +595,64 @@ test('歌手线索不能把歌名拆错（突然的陀螺 / 我的未来不是�
   const { BilibiliClient } = require('../src/bilibili/bili-api');
   const { Logger } = require('../src/lib/logger');
   const client = new BilibiliClient({}, new Logger('test', 'error'));
+
+  // 没有空格的歌名一律不该拆出线索
   for (const song of ['突然的陀螺', '我的未来不是梦', '夜空中最亮的星', '稻香']) {
     assert.deepStrictEqual(client._artistHints(song), [], `${song} 不该被拆出歌手线索`);
   }
-  // 有明确分隔的才认，且两个词都收（语序不确定）
+
+  // 有明确分隔的才认，两个词都收（语序不确定）
   assert.deepStrictEqual(client._artistHints('周杰伦 晴天'), ['周杰伦', '晴天']);
-  assert.deepStrictEqual(client._artistHints('Taylor Swift - Love Story'), ['Taylor Swift']);
+
+  /**
+   * _artistHints 返回**超集**（所有空格分开的片段），不做歌名/歌手的区分。
+   *
+   * 原来它试图用「两个词、每词 2~5 字符」的正则精确区分，
+   * 结果多词歌手名（Alan Walker、Taylor Swift）整个识别不出来。
+   *
+   * 现在改成返回所有片段 —— 因为「哪边是歌手」不再靠猜，
+   * 而是由解析器的**硬规则**决定：只认 `歌手 - 歌名`（横线前是歌手）。
+   * 参见下面「歌手 - 歌名 是唯一的歌手指定格式」那组测试。
+   */
+  const taylor = client._artistHints('Taylor Swift - Love Story');
+  assert.ok(taylor.includes('Taylor Swift'), '多词歌手名要能识别出来');
+  assert.ok(taylor.includes('Love') && taylor.includes('Story'), '片段也作为候选返回（超集）');
+
+  const alan = client._artistHints('Alone Alan Walker');
+  assert.ok(alan.includes('Alan') && alan.includes('Walker'), '多词歌手名的每个词都要在');
+});
+
+test('「歌手 - 歌名」是唯一的歌手指定格式', () => {
+  const { parseRequest } = require('../src/danmaku/parser');
+  const cfg = { keywords: ['点歌'], requireKeyword: true, minLength: 2, maxLength: 40 };
+
+  // 标准格式：横线前面是歌手，后面是歌名
+  const cases = [
+    ['点歌 周杰伦 - 晴天', '周杰伦', '晴天'],
+    ['点歌 Alan Walker - Alone', 'Alan Walker', 'Alone'],
+    ['点歌 Taylor Swift - Love Story', 'Taylor Swift', 'Love Story'],
+    ['点歌 米津玄師 - Lemon', '米津玄師', 'Lemon'],
+    ['点歌 Heart - Alone', 'Heart', 'Alone'],
+    ['点歌 Alone-Heart', 'Alone', 'Heart'],
+    ['点歌 Alone – Heart', 'Alone', 'Heart'], // en dash
+    ['点歌 Alone — Heart', 'Alone', 'Heart'], // em dash
+  ];
+  for (const [msg, wantArtist, wantTitle] of cases) {
+    const r = parseRequest(msg, cfg);
+    assert.strictEqual(r.artist, wantArtist, `${msg} 的歌手应该是 ${wantArtist}`);
+    assert.strictEqual(r.title, wantTitle, `${msg} 的歌名应该是 ${wantTitle}`);
+  }
+
+  // 别的格式一律不解析歌手
+  for (const msg of ['点歌 晴天 周杰伦', '点歌 周杰伦 晴天', '点歌 晴天', '点歌 Alone Heart']) {
+    const r = parseRequest(msg, cfg);
+    assert.strictEqual(r.artist, '', `${msg} 不是「歌手 - 歌名」格式，不该解析出歌手`);
+    assert.strictEqual(r.title, '', `${msg} 不该解析出歌名`);
+  }
+
+  // 三段式不猜（「A - B - C」）
+  const three = parseRequest('点歌 A - B - C', cfg);
+  assert.strictEqual(three.artist, '', '三段式不该猜哪边是歌手');
 });
 
 test('歌名词不会被当成歌手加分', () => {

@@ -5,6 +5,9 @@ const fs = require('fs');
 const path = require('path');
 const { WebSocketServer } = require('ws');
 const { ensureDir } = require('./lib/util');
+// 控制台手动点歌复用同一个解析器，保证和弹幕点歌行为一致
+// （尤其是「歌手 - 歌名」这个格式）
+const { parseRequest } = require('./danmaku/parser');
 
 const MIME = {
   '.html': 'text/html; charset=utf-8',
@@ -552,12 +555,36 @@ class WebServer {
 
       if (pathname === '/api/song' && req.method === 'POST') {
         const body = JSON.parse((await readBody(req)) || '{}');
+        /**
+         * 控制台手动点歌也要支持「歌手 - 歌名」格式。
+         *
+         * 主播在控制台输入「周杰伦 - 晴天」时，如果不解析就直接当歌名搜，
+         * 分隔符信息就丢了 —— 和弹幕点歌的行为会不一致。
+         * 这里复用同一个解析器，保证两条路径表现一致。
+         */
+        const rawInput = String(body.song || '').trim();
+        let artist = '';
+        let title = '';
+        try {
+          const parsed = parseRequest(rawInput, this.config.trigger || {});
+          if (parsed && parsed.ok && parsed.artist && parsed.title) {
+            artist = parsed.artist;
+            title = parsed.title;
+          }
+        } catch {
+          /* 解析失败就按纯歌名处理 */
+        }
+        // 解析成功时用「歌名」做搜索词（干净），否则用原始输入
+        const songForSearch = artist && title ? `${artist} ${title}` : rawInput;
+
         const result = await this.engine.requestSong({
-          song: body.song,
+          song: songForSearch,
           nickname: body.nickname || '主播手动',
           userId: body.userId || 'console',
-          message: body.song || '',
+          message: rawInput,
           force: true,
+          artist,
+          title,
         });
         return this._json(res, result);
       }

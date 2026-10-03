@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 const EventEmitter = require('events');
 const { SongQueue, STATUS } = require('./queue');
@@ -98,11 +98,35 @@ class PlaybackEngine extends EventEmitter {
     if (!parsed || !parsed.ok) return;
     const songs = splitSongs(parsed.song);
     if (!songs.length) return;
-    for (const song of songs) this.requestSong({ song, nickname, userId, message: content });
+    /**
+     * 把「歌手 - 歌名」的解析结果一路带到搜索环节。
+     *
+     * 约定：**横线前面是歌手，后面是歌名**，这是唯一的歌手指定格式。
+     * splitSongs 会把「A、B」拆成多首；那种情况下分隔符归属不明确，就不传。
+     */
+    const dash = songs.length === 1 ? { artist: parsed.artist || '', title: parsed.title || '' } : null;
+    for (const song of songs) {
+      this.requestSong({
+        song,
+        nickname,
+        userId,
+        message: content,
+        artist: dash ? dash.artist : '',
+        title: dash ? dash.title : '',
+      });
+    }
   }
 
   /** 点歌主流程（也供控制台手动调用） */
-  async requestSong({ song, nickname = '观众', userId = 'manual', message = '', force = false }) {
+  async requestSong({
+    song,
+    nickname = '观众',
+    userId = 'manual',
+    message = '',
+    force = false,
+    artist = '',
+    title = '',
+  }) {
     const clean = String(song || '').trim();
     if (!clean) return { ok: false, reason: 'empty' };
 
@@ -117,7 +141,7 @@ class PlaybackEngine extends EventEmitter {
       }
     }
 
-    const entry = this.queue.createEntry({ song: clean, nickname, userId, message });
+    const entry = this.queue.createEntry({ song: clean, nickname, userId, message, artist, title });
     this.stats.requests += 1;
 
     const isInterrupt = this.mode === 'interrupt';
@@ -162,7 +186,10 @@ class PlaybackEngine extends EventEmitter {
           result = { ok: false, reason: `指定的视频取不到：${err.message}` };
         }
       } else {
-        result = await this.bili.pickForSong(entry.song);
+        // 把「歌手 - 歌名」的分隔信息一起传下去。
+        // 解析器会把 `-` 换成空格（清理噪声），但分隔符决定了哪边是歌手，
+        // 丢了它就只能靠平台的歌手数据 —— 而那份数据经常是错的。
+        result = await this.bili.pickForSong(entry.song, { artist: entry.artist, title: entry.title });
       }
       if (!result.ok) {
         entry.status = STATUS.FAILED;

@@ -118,7 +118,51 @@ function parseRequest(content, config = {}) {
     return { ok: false, reason: 'not-a-song', song, keyword: hitKeyword, raw };
   }
 
-  return { ok: true, song, keyword: hitKeyword, raw };
+  /**
+   * 【唯一的歌手指定格式：`歌手 - 歌名`】
+   *
+   * 约定（由主播/观众遵守）：
+   *   `点歌 周杰伦 - 晴天`      → 歌手=周杰伦，歌名=晴天
+   *   `点歌 Alan Walker - Alone` → 歌手=Alan Walker，歌名=Alone
+   *
+   * **横线前面是歌手，后面是歌名。别的格式一律不认** ——
+   * 空格分隔（`点歌 晴天 周杰伦`）不解析歌手，退回纯歌名搜索。
+   *
+   * 为什么不做格式猜测：之前试过用「首字母大写」「不在官方歌名里」等启发式
+   * 去猜哪边是歌手，结果在同名不同歌的场景（Alone/Stay/Hello）反复出错，
+   * 还让代码变得难以预测。一个明确的格式约定比一堆猜测可靠得多。
+   *
+   * 上面第 76 行为了清理噪声把 `-` 换成了空格，所以这里回到**原始文本**
+   * 重新按分隔符切开（去掉触发词之后的部分）。
+   */
+  let artist = '';
+  let title = '';
+  if (config.dashArtistFormat !== false) {
+    const rawAfterKeyword = String(content || '')
+      .trim()
+      .replace(hitKeyword ? new RegExp(escapeRegExp(hitKeyword), 'ig') : /$^/, ' ')
+      .trim();
+    const segs = rawAfterKeyword
+      .split(/\s*[-–—]\s*/)
+      .map((x) => x.replace(/^[\s:：,，、]+|[\s:：,，、]+$/g, '').trim())
+      .filter(Boolean);
+    // 恰好两段才算（「A - B - C」不猜）。歌手名不该是长句，限制 40 字以内。
+    if (segs.length === 2 && segs[0].length >= 1 && segs[0].length <= 40 && segs[1].length >= 1) {
+      artist = segs[0];
+      title = segs[1];
+    }
+  }
+
+  return {
+    ok: true,
+    song,
+    keyword: hitKeyword,
+    raw,
+    /** 「歌手 - 歌名」解析出的歌手；没写这个格式时是空串 */
+    artist,
+    /** 「歌手 - 歌名」解析出的歌名；没写这个格式时是空串 */
+    title,
+  };
 }
 
 /**

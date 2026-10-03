@@ -107,10 +107,17 @@ for (const n of ['SongOverlay', 'OverlayPlacer', 'WinDiag', 'WhereIsIt']) {
 }
 
 // 临时目录
+//
+// 【注意】`npm run release:overlay`（pack-overlay-release.js）会在这里生成
+// Release 附件 zip 和打包工作目录 —— 那是**构建产物**，不是残留。
+// 它们随时可以删，但存在也完全正常，所以不算问题。
+const TEMP_NOISE = /^(douyin-song-request-overlay-.*\.zip|overlay-pkg)$/i;
 const temps = [];
 try {
   for (const f of fs.readdirSync(TEMP)) {
-    if (/overlay|SongOverlay|歌单/i.test(f)) temps.push(f);
+    if (!/overlay|SongOverlay|歌单/i.test(f)) continue;
+    if (TEMP_NOISE.test(f)) continue;
+    temps.push(f);
   }
 } catch {
   /* ignore */

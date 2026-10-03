@@ -1,6 +1,6 @@
 {
   "name": "douyin-song-request",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "private": true,
   "description": "抖音弹幕点歌 → 自动在 B 站找到原版并播放。给直播主播用的纯音频点歌工具，含歌单悬浮窗。",
   "type": "commonjs",
