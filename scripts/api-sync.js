@@ -1,13 +1,23 @@
 'use strict';
 /**
- * 用 GitHub API 把工作区里"已跟踪但未提交"的改动推上去。
+ * 用 GitHub API 把工作区的改动推上去。
  *
  * 为什么单独写一个：本机 github.com:443 不通，git push / git fetch 都用不了，
  * 只能走 api.github.com 的 Git Data API。
  *
  * 做法：
- *   1. 用一个临时 git 仓库把当前工作区做成一个 commit（不动原仓库的 HEAD）
- *   2. 用 API 把变化上传成 blob → tree → commit → 更新 ref
+ *   1. 拉取远端的 tree，用 git hash-object 算出本地每个文件的 blob sha 做比对
+ *   2. 只把"内容不一样"的文件上传成 blob → 建 tree → 建 commit → 更新 ref
+ *
+ * ⚠️ 【关于删除】
+ * 默认**不会**删除远端的任何文件。
+ *
+ * 为什么改成默认关闭：原来它会自动把"远端有、本地没有"的文件删掉。
+ * 结果我本地删掉 overlay/ 之后跑了一次同步，**把 GitHub 上的悬浮窗源码也删了**，
+ * 只能再从 git 历史里恢复。远程删除是不可逆的，不该是默认行为。
+ *
+ * 确实要删远端文件时，显式加 --allow-delete：
+ *     node scripts/api-sync.js "说明" --allow-delete
  */
 const fs = require('fs');
 const os = require('os');
@@ -18,7 +28,15 @@ const ROOT = path.resolve(__dirname, '..');
 const OWNER = 'LORQAQ';
 const REPO = 'douyin-song-request';
 const BRANCH = 'main';
-const MESSAGE = process.argv[2] || 'chore: sync working tree';
+
+/** 是否允许删除远端文件。默认 false —— 见文件头的说明。 */
+const ALLOW_DELETE = process.argv.includes('--allow-delete');
+
+const MESSAGE =
+  process.argv
+    .slice(2)
+    .filter((a) => a !== '--allow-delete')
+    .join(' ') || 'chore: sync working tree';
 
 const LOG = path.join(process.env.TEMP, 'api-sync.txt');
 try { fs.unlinkSync(LOG); } catch {}
@@ -98,22 +116,36 @@ async function api(method, url, body) {
   toUpload.forEach((x) => log('   ' + x.rel));
 
   /**
-   * 【还要处理"本地已删除"的文件】
+   * 【远端删除：默认关闭，必须显式 --allow-delete】
    *
-   * 上面只比对了"本地文件 vs 远端 tree"，只看得到新增和修改。
-   * 本地删掉的文件在远端会一直留着 —— 表现成"我明明删了，GitHub 上还在"。
-   * 所以反过来再扫一遍：远端有、本地文件已不存在的，在 tree 里用 sha:null 标记删除。
+   * 原来这段是无条件执行的 —— 本地删文件后跑一次同步，远端也跟着删。
+   * 踩过的坑：我本地删掉 overlay/ 之后同步了一次，GitHub 上的悬浮窗源码
+   * 一起被删了，只能从 git 历史里 checkout 回来。
+   * 远程删除不可逆，不该是默认行为。所以现在：
+   *   · 不加 --allow-delete → 只报告"这些文件远端有、本地没有"，不动它们
+   *   · 加了 --allow-delete → 才真的删
    */
   const localSet = new Set(tracked);
-  const toDelete = [];
+  const orphaned = [];
   for (const rel of remoteFiles.keys()) {
     if (localSet.has(rel)) continue;
-    if (fs.existsSync(path.join(ROOT, rel))) continue; // 本地还在，不动它
-    toDelete.push(rel);
+    if (fs.existsSync(path.join(ROOT, rel))) continue; // 本地还在，不算删除
+    orphaned.push(rel);
   }
-  if (toDelete.length > 0) {
-    log('需要删除: ' + toDelete.length + ' 个文件（本地已不存在）');
-    toDelete.forEach((r) => log('   - ' + r));
+
+  const toDelete = ALLOW_DELETE ? orphaned : [];
+  if (orphaned.length > 0) {
+    if (ALLOW_DELETE) {
+      log('需要删除: ' + toDelete.length + ' 个文件（本地已不存在，--allow-delete 已开启）');
+      toDelete.forEach((r) => log('   - ' + r));
+    } else {
+      log('');
+      log('⚠️  有 ' + orphaned.length + ' 个文件远端存在、本地没有：');
+      orphaned.forEach((r) => log('   ? ' + r));
+      log('    默认不会删除它们（远程删除不可逆）。');
+      log('    确实要删就加 --allow-delete 重新执行。');
+      log('');
+    }
   }
 
   if (toUpload.length === 0 && toDelete.length === 0) {
