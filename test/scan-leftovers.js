@@ -25,6 +25,7 @@ const mentions = [];
  */
 const INTENTIONAL = new Set([
   'scripts/overlay-launch.js', // npm run overlay 的入口，找不到 exe 时给出获取指引
+  'scripts/pack-overlay-release.js', // 给 Release 打包悬浮窗附件（源码取自 GitHub）
   'test/scan-leftovers.js', // 本脚本自己
   'test/check-frontend.js',
 ]);
