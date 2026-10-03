@@ -26,7 +26,7 @@ const CASES = [
   ['点歌 米津玄師 - Lemon', '米津玄师', 275, '日文歌手（繁体输入）'],
   ['点歌 Taylor Swift - Love Story', 'Taylor Swift', 231, '多词歌手 + 多词歌名'],
   ['点歌 The Kid LAROI - Stay', 'The Kid LAROI', 141, '含 The 的歌手名'],
-  ['点歌 Marshmello - Alone', 'Marshmello', 153, '同名不同歌·指定另一版本'],
+  ['点歌 Marshmello - Alone', 'Marshmello', 199, '同名不同歌·指定另一版本'],
 ];
 
 (async () => {

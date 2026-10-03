@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 
 const { BILI_HEADERS, RateLimiter, LruCache, durationTextToSec, stripHtml, sleep, md5, formatDuration } = require('../lib/util');
 
@@ -2213,11 +2213,26 @@ class BilibiliClient {
       void isLatinOnly;
     }
 
-    // 【第四步之二·时长门槛】现在才做时长过滤——因为要等B站核验告诉我们
-    // 「平台数据可不可信」。平台把歌手/时长写错时（meme 改编曲常见），
-    // 这道门槛会把正确答案剔掉，所以那时要跳过。
-    if (meta) {
+    /**
+     * 【第四步之二·时长门槛】现在才做时长过滤——因为要等B站核验告诉我们
+     * 「平台数据可不可信」。平台把歌手/时长写错时（meme 改编曲常见），
+     * 这道门槛会把正确答案剔掉，所以那时要跳过。
+     *
+     * 【观众指定了歌手时也要跳过】
+     * 实测「点歌 Marshmello - Alone」：平台把原唱判成了 Rentz（另一首同名电音）、
+     * 时长给成 273s，而 Marshmello 那首实际只有 153s。于是这道门槛
+     * 用 273s 当基准，把**正确**的候选全剔了：
+     *     ✗【Marshmello】Alone 官方MV（199s，差74s）
+     *     ✗ Marshmello - Alone（200s，差73s）
+     * 只剩一个 275s 的「百万级装备试听」加长版 —— 它反而"最接近 273s"。
+     *
+     * 观众既然亲手写了歌手，平台的歌手/时长数据就不该再有发言权。
+     * 正确性交给下面的「指定歌手」硬约束 + B站 tag/简介核验。
+     */
+    if (meta && !fmtArtist) {
       search = this._applyDurationGate(search, meta);
+    } else if (meta && fmtArtist) {
+      this.logger.debug('观众已指定歌手，跳过平台的时长门槛（平台数据可能是另一首同名歌的）');
     }
 
     // 【第四步之三·热门歌手合集】散装候选不够可靠时，去歌手的合集里找原版。
@@ -2283,7 +2298,7 @@ class BilibiliClient {
     }
 
     /**
-     * 【最后一道关·歌手是硬约束】
+     * 【最后一道关·时长 + 歌手】
      *
      * 放在**这里**而不是前面，是因为白名单合集（第二步之二）、热门歌手合集
      * （第四步之三）、本地索引候选（第三步之末）都会往候选池里插人，
@@ -2292,9 +2307,6 @@ class BilibiliClient {
      * 实测「点歌 Heart - Alone」：歌手明明填了 Heart，结果还是选了
      * 「『Alan walker』教主的电音神曲MV合集 · P3 Alone」（1060 分），
      * 和 Heart 毫无关系 —— 硬约束必须在**所有候选都到齐之后**执行。
-     *
-     * 只重罚不删除：万一观众把歌手名写错（比如写成中文译名），
-     * 至少还有兜底，不会因为一个格式小错就什么都点不出来。
      */
     if (fmtArtist && search.candidates && search.candidates.length) {
       const al = fmtArtist.toLowerCase();
@@ -2318,6 +2330,53 @@ class BilibiliClient {
       reweighted.sort((a, b) => (b.score || 0) - (a.score || 0));
       search = { ...search, candidates: reweighted };
       this.logger.info(`🔖 指定歌手「${fmtArtist}」：${hit}/${reweighted.length} 个候选提到了他`);
+
+      /**
+       * 【时长明显偏长的别选】
+       *
+       * 观众写「Marshmello - Alone」时想要的是 2 分半那首，
+       * 但实测选到了「百万级装备试听 Alone - Marshmello【Hi-Res】」这种
+       * 4 分半的加长版 —— 歌是对的，但塞了很多前奏/尾奏，直播里很拖。
+       *
+       * 难点在于**基准时长**：平台给的 durationSec 本身可能是错的
+       * （实测平台说 Marshmello《Alone》273s，实际 153s），
+       * 用它当基准会把正确答案剔掉。
+       *
+       * 解法：只拿**提到了这位歌手**的候选来定基准 —— 它们的时长不会被
+       * 别的同名歌污染，比平台数据可靠。基准定好后，比基准长出一大截的
+       * 一律剔除（加长版/整轨版），偏短的不剔除（可能只是剪辑紧一点）。
+       */
+
+      const artistMatched = reweighted.filter((c) => {
+        const blob = `${c.title || ''} ${c.owner || c.author || ''}`.toLowerCase();
+        return blob.includes(al) && Number(c.duration) > 0;
+      });
+      if (artistMatched.length >= 2) {
+        // 取偏短的三个的中位数当基准：加长版天然更长，不会把基准抬高
+        const durs = artistMatched
+          .map((c) => Number(c.duration))
+          .sort((a, b) => a - b);
+        const shortHalf = durs.slice(0, Math.max(2, Math.ceil(durs.length / 2)));
+        const base = shortHalf[Math.floor(shortHalf.length / 2)];
+        const maxDur = base + Math.max(45, base * 0.25);
+        const before = search.candidates.length;
+        const kept = search.candidates.filter((c) => {
+          const d = Number(c.duration) || 0;
+          if (!d || d <= maxDur) return true;
+          this.logger.info(
+            `⏱ 剔除偏长版本「${String(c.title || '').slice(0, 30)}」（${d}s，基准 ${base}s，上限 ${Math.round(maxDur)}s）`
+          );
+          return false;
+        });
+        if (kept.length) {
+          search = { ...search, candidates: kept };
+          if (kept.length < before) {
+            this.logger.info(`⏱ 指定歌手的版本基准 ${base}s，剔除了 ${before - kept.length} 个偏长候选`);
+          }
+        } else {
+          this.logger.debug('时长过滤会把候选全剔光，保底保留原候选');
+        }
+      }
     }
 
     if (!search.candidates.length) {
