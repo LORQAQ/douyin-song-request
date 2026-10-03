@@ -97,13 +97,38 @@ async function api(method, url, body) {
   log('需要上传: ' + toUpload.length + ' 个文件');
   toUpload.forEach((x) => log('   ' + x.rel));
 
-  if (toUpload.length === 0) {
+  /**
+   * 【还要处理"本地已删除"的文件】
+   *
+   * 上面只比对了"本地文件 vs 远端 tree"，只看得到新增和修改。
+   * 本地删掉的文件在远端会一直留着 —— 表现成"我明明删了，GitHub 上还在"。
+   * 所以反过来再扫一遍：远端有、本地文件已不存在的，在 tree 里用 sha:null 标记删除。
+   */
+  const localSet = new Set(tracked);
+  const toDelete = [];
+  for (const rel of remoteFiles.keys()) {
+    if (localSet.has(rel)) continue;
+    if (fs.existsSync(path.join(ROOT, rel))) continue; // 本地还在，不动它
+    toDelete.push(rel);
+  }
+  if (toDelete.length > 0) {
+    log('需要删除: ' + toDelete.length + ' 个文件（本地已不存在）');
+    toDelete.forEach((r) => log('   - ' + r));
+  }
+
+  if (toUpload.length === 0 && toDelete.length === 0) {
     log('已一致，无需推送');
     return;
   }
 
-  // 3) 上传 blob
-  const treeItems = [];
+  // 3) 上传 blob（新增/修改的）
+  //    sha:null 的条目表示删除（GitHub Git Data API 的约定）
+  const treeItems = toDelete.map((rel) => ({
+    path: rel,
+    mode: '100644',
+    type: 'blob',
+    sha: null,
+  }));
   for (const { rel } of toUpload) {
     const abs = path.join(ROOT, rel);
     const buf = fs.readFileSync(abs);
