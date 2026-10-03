@@ -6,6 +6,36 @@ const path = require('path');
 
 const md5 = (s) => crypto.createHash('md5').update(s).digest('hex');
 
+/**
+ * 过滤来自客户端的配置 patch，剥掉内部字段。
+ *
+ * 背景：WebSocket 的 `updateConfig` 消息会把 patch 合并进活配置并落盘。
+ * 其中两个字段能间接决定「往哪个路径写文件」：
+ *   - `__paths`         直接指定 config.json 的落盘位置
+ *   - `bilibili.__root` WBI 密钥缓存 / 原唱缓存都以它为根目录 writeFileSync
+ * 被利用就等于「以主播权限往任意路径写 JSON」。虽然 WS 已经校验了 Origin，
+ * 但这类字段本来就不该由客户端设置，直接剥掉最省心。
+ *
+ * @param {object} patch 客户端传来的 patch
+ * @returns {object} 去掉内部字段后的新对象（不改原对象）
+ */
+function sanitizeConfigPatch(patch) {
+  if (!patch || typeof patch !== 'object' || Array.isArray(patch)) return {};
+
+  const blocked = ['__paths', '__root', '__proto__', 'constructor', 'prototype'];
+  const out = {};
+  for (const [key, value] of Object.entries(patch)) {
+    if (blocked.includes(key)) continue;
+    // 递归清理嵌套对象（比如 bilibili.__root）
+    if (value && typeof value === 'object' && !Array.isArray(value)) {
+      out[key] = sanitizeConfigPatch(value);
+    } else {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
@@ -251,6 +281,7 @@ module.exports = {
   ensureDir,
   readJsonSafe,
   writeJson,
+  sanitizeConfigPatch,
   uid,
   RateLimiter,
   LruCache,

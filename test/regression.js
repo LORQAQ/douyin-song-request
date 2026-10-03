@@ -357,4 +357,43 @@ module.exports = async function registerRegressionTests({ test, testAsync, asser
     assert.ok(!fs.existsSync(file + '.tmp'), '临时文件应该已经被 rename 掉');
     console.log(`      → 并发写入后文件仍是合法 JSON（含 ${Object.keys(raw).length} 条）`);
   });
+
+  /* ===================================================================
+   * 9) 客户端配置 patch 不能带内部字段
+   *
+   * updateConfig 会把 patch 合并进活配置并落盘，其中 `__paths`（落盘路径）
+   * 和 `bilibili.__root`（各缓存的根目录）能让攻击者往任意路径写文件。
+   * 虽然 WS 已校验 Origin，但这类字段本来就不该由客户端设置。
+   * =================================================================== */
+  await test('配置 patch 里的内部字段被剥掉', () => {
+    const { sanitizeConfigPatch } = require('../src/lib/util');
+
+    // 正常字段要保留
+    const ok = sanitizeConfigPatch({ playback: { volume: 0.5 }, danmaku: { webRid: '123' } });
+    assert.strictEqual(ok.playback.volume, 0.5, '正常字段不该被删');
+    assert.strictEqual(ok.danmaku.webRid, '123');
+
+    // 内部字段要剥掉
+    const evil1 = sanitizeConfigPatch({ __paths: { config: 'C:/evil.json' } });
+    assert.ok(!('__paths' in evil1), '__paths 必须被剥掉');
+
+    const evil2 = sanitizeConfigPatch({ bilibili: { __root: 'C:/evil', cookie: 'keep-me' } });
+    assert.ok(!('__root' in evil2.bilibili), 'bilibili.__root 必须被剥掉');
+    assert.strictEqual(evil2.bilibili.cookie, 'keep-me', '同层正常字段要保留');
+
+    // 原型污染
+    const evil3 = sanitizeConfigPatch({ __proto__: { polluted: 1 } });
+    assert.ok(!('polluted' in {}), '不能污染 Object.prototype');
+
+    // 非法输入
+    assert.deepStrictEqual(sanitizeConfigPatch(null), {});
+    assert.deepStrictEqual(sanitizeConfigPatch('x'), {});
+    assert.deepStrictEqual(sanitizeConfigPatch([1, 2]), {});
+
+    // 不能改原对象
+    const src = { __paths: { a: 1 }, keep: 2 };
+    sanitizeConfigPatch(src);
+    assert.ok('__paths' in src, '不应该修改传入的对象');
+    console.log('      → 内部字段被剥掉，正常字段保留');
+  });
 };

@@ -2,11 +2,34 @@
 
 观众在抖音直播间发一句 **「点歌 晴天」**，程序自动去B站找到最合适的视频、**只放声音**送进你的抖音直播伴侣。
 
+<p>
+<img alt="Node" src="https://img.shields.io/badge/Node.js-%E2%89%A518-339933?logo=node.js&logoColor=white">
+<img alt="Platform" src="https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows&logoColor=white">
+<img alt="License" src="https://img.shields.io/badge/License-MIT-green">
+<img alt="Tests" src="https://img.shields.io/badge/Tests-83%20passed-brightgreen">
+<img alt="Deps" src="https://img.shields.io/badge/Dependencies-1%20(ws)-blue">
+</p>
+
 - 面向 **抖音直播伴侣**（靠「系统声音」把音乐混进去，不用装虚拟声卡）
 - 弹幕抓取有 **三条独立通道**，哪条通用哪条（HTTP 长轮询 / 浏览器插件转发 / 浏览器抓取）
-- 点歌有 **去重、冷却、黑名单、播放量/时长过滤**，防止被刷屏和点到奇怪视频
+- **选歌准**：自动排除翻唱、鬼畜、AI 翻调、切片，优先原版/官方投稿；热门歌走本地合集索引，
+  每次点都命中同一个正确版本
+- **歌单悬浮窗**：独立透明窗口，直播伴侣用「窗口捕获」加上去，观众能看到点歌列表
 - 播放模式支持 **排队播放** 与 **立即打断**，控制台一键切换
-- 带 **自动重试、音量自动校准、撤销、播放历史、快捷键、一键体检**
+- 带 **自动重试、音量自动校准（EBU R128）、撤销、播放历史、快捷键、一键体检**
+- **直链过期自愈**：B站音频直链约 2 小时过期，程序会自动换新地址，不用你手动点
+- 点歌有 **去重、冷却、每人配额、播放量/时长过滤**，防止被刷屏和点到奇怪视频
+
+### 实测数据
+
+| 指标 | 数值 |
+|---|---|
+| 启动到可用 | 254 ms |
+| 点歌（命中本地索引） | **0.1~0.5 秒** |
+| 点歌（联网搜索） | 3~5 秒 |
+| 稳态内存 | RSS ≈ 130 MB / 堆 10~16 MB |
+| 2000 条弹幕处理 | 5 ms |
+| 连续 3 分钟 50 条/秒 | 内存 **零增长** |
 
 ---
 

@@ -9,7 +9,7 @@ const { WebServer } = require('./server');
 const { MediaProxy } = require('./lib/media-proxy');
 const { LoudnessAnalyzer } = require('./lib/loudness');
 const { launchAudioPlayer, openInDefaultBrowser } = require('./lib/launcher');
-const { deepMerge, writeJson, readJsonSafe } = require('./lib/util');
+const { deepMerge, writeJson, readJsonSafe, sanitizeConfigPatch } = require('./lib/util');
 const protocol = require('./danmaku/protocol');
 
 const BANNER = `
@@ -78,8 +78,17 @@ async function main() {
         await startDanmaku();
       },
       onConfigPatch: async (patch) => {
+        // 【安全】不能接受任意字段的 patch。
+        //
+        // 原因：patch 会被 deepMerge 进活配置，然后 writeJson(config.__paths.config, ...) 落盘。
+        // 如果 patch 里带 `__paths`（把落盘路径重指到别处）或 `bilibili.__root`
+        // （WBI 密钥缓存和原唱缓存都以它为根 writeFileSync），
+        // 就等于「可以往任意路径写文件」。虽然 WebSocket 已经校验了 Origin，
+        // 但纵深防御不能少 —— 这里把这两个内部字段直接剥掉。
+        const safePatch = sanitizeConfigPatch(patch);
+
         // 只在内存里合并生效
-        Object.assign(config, deepMerge(config, patch));
+        Object.assign(config, deepMerge(config, safePatch));
         engine.updateConfig(config);
         bili.updateConfig(config.bilibili || {});
         // 落盘时**只写用户改过的那几个字段**：
@@ -87,13 +96,13 @@ async function main() {
         // 而且会把 example 里的中文注释/内容复制一遍，容易出编码问题。
         try {
           const userConfig = readJsonSafe(config.__paths.config, {}) || {};
-          const next = deepMerge(userConfig, patch);
+          const next = deepMerge(userConfig, safePatch);
           writeJson(config.__paths.config, next);
         } catch (err) {
           logger.warn(`保存配置失败：${err.message}（本次改动只在内存中生效）`);
         }
         server.broadcast({ type: 'status', status: server._status(), urls: server._urls() });
-        logger.info(`配置已更新：${JSON.stringify(patch).slice(0, 200)}`);
+        logger.info(`配置已更新：${JSON.stringify(safePatch).slice(0, 200)}`);
       },
     },
   });
