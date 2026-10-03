@@ -142,6 +142,29 @@ async function api(method, url, body) {
   if (upd.status !== 200) { log('❌ 更新 ref 失败: ' + upd.text.slice(0, 200)); process.exitCode = 1; return; }
 
   log('✅ 已推送: ' + commit.json.sha.slice(0, 8));
+
+  /**
+   * 关于「本地 HEAD 和远端 SHA 不一样」：
+   *
+   * 这是本机 github.com:443 不通、只能走 API 推送的必然结果 ——
+   * API 在服务端新建的 commit 对象本地没有（git fetch 也用不了），
+   * 所以 `git update-ref` 指不过去、本地也没法真正"对齐"。
+   *
+   * 影响：只是 `git status` 会显示本地领先 1 个 commit，
+   * **文件内容是一致的**（api-sync 是按内容 hash 比对后再上传的）。
+   * 下次同步时它会自动把旧的本地 commit 视作"没这个文件"，
+   * 但因为内容相同（blob sha 一样），不会重复上传。
+   *
+   * 想彻底消除这个差异，需要在能连 github.com 的网络下执行一次：
+   *     git fetch origin && git reset --hard origin/main
+   */
+  const localHead = execFileSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8' }).trim();
+  if (localHead !== commit.json.sha) {
+    log('提示: 本地 HEAD(' + localHead.slice(0, 8) + ') 与远端(' + commit.json.sha.slice(0, 8) + ') 不同');
+    log('      这是 API 推送的正常现象，文件内容一致；');
+    log('      等网络能连 github.com 时执行 git fetch origin && git reset --hard origin/main 即可对齐。');
+  }
+
   log('DONE');
 })().catch((e) => {
   log('!! 异常: ' + (e && e.stack ? e.stack : e));
