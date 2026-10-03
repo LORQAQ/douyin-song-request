@@ -32,6 +32,21 @@ const BRANCH = 'main';
 /** 是否允许删除远端文件。默认 false —— 见文件头的说明。 */
 const ALLOW_DELETE = process.argv.includes('--allow-delete');
 
+/**
+ * 【删除保护清单】这些路径永远不会被自动删除，除非同时加 --force-protected。
+ *
+ * 为什么：`overlay/` 是独立子项目，本地可能故意不装它（省得每次都编译），
+ * 但它是仓库的正经内容，绝不该因为"本地没有"就被同步删掉。
+ * 有了这层保护，即使误加了 --allow-delete 也删不掉它们。
+ */
+const PROTECTED_PREFIXES = ['overlay/'];
+const FORCE_PROTECTED = process.argv.includes('--force-protected');
+
+function isProtected(rel) {
+  if (FORCE_PROTECTED) return false;
+  return PROTECTED_PREFIXES.some((p) => rel === p.replace(/\/$/, '') || rel.startsWith(p));
+}
+
 const MESSAGE =
   process.argv
     .slice(2)
@@ -127,10 +142,24 @@ async function api(method, url, body) {
    */
   const localSet = new Set(tracked);
   const orphaned = [];
+  const protectedHits = [];
   for (const rel of remoteFiles.keys()) {
     if (localSet.has(rel)) continue;
     if (fs.existsSync(path.join(ROOT, rel))) continue; // 本地还在，不算删除
+    if (isProtected(rel)) {
+      protectedHits.push(rel);
+      continue; // 受保护，永远不删
+    }
     orphaned.push(rel);
+  }
+
+  if (protectedHits.length > 0) {
+    log('');
+    log('🛡  ' + protectedHits.length + ' 个受保护文件本地不存在，已跳过（不会删除）：');
+    protectedHits.slice(0, 8).forEach((r) => log('   🛡 ' + r));
+    if (protectedHits.length > 8) log('   …还有 ' + (protectedHits.length - 8) + ' 个');
+    log('    这些是仓库的正经内容，本地可以故意不装。');
+    log('');
   }
 
   const toDelete = ALLOW_DELETE ? orphaned : [];
