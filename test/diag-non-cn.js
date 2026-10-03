@@ -66,7 +66,7 @@ const SONGS = [
   const mm = new MusicMeta(config.musicMeta || {}, logger);
   for (const s of SONGS.slice(0, 8)) {
     try {
-      const meta = await mm.lookup(s);
+      const meta = await mm.lookupOriginal(s);
       const artist = meta && (meta.artist || meta.singer) ? meta.artist || meta.singer : null;
       const dur = meta && meta.duration ? meta.duration + 's' : '-';
       log('   ' + s.padEnd(24) + ' → ' + (artist ? '原唱: ' + artist + '  时长: ' + dur : '❌ 查不到'));
