@@ -187,11 +187,23 @@ class RequestFilter {
     this.config = config;
   }
 
+  /**
+   * 检查一个点歌请求是否允许，**通过时就地预留名额**。
+   *
+   * 【为什么必须预留】原来的流程是 check（只读）→ 异步搜索（2~20 秒）→ 成功才 commit。
+   * 同一首歌被 N 个人同时点（直播间很常见）时，N 个请求都在 commit 之前完成了 check，
+   * 于是全部通过，sameSongWindowMs 完全失效；perUserCooldownMs 同理
+   * （userLast 只在 commit 时写，同一秒内连发多首也能绕过）。
+   *
+   * 现在改成：check 通过的同时就把 songHistory / userLast / userQueue 写上。
+   * 搜索失败时由调用方调 cancel() 回滚，观众不会因为一次失败就半天点不了。
+   */
   check({ userId, nickname, song }) {
     const now = Date.now();
     const windowMs = Number(this.config.sameSongWindowMs ?? 900000);
     const cooldownMs = Number(this.config.perUserCooldownMs ?? 60000);
     const maxPerUser = Number(this.config.maxQueuePerUser ?? 3);
+    const key = String(userId);
 
     const fp = songFingerprint(song);
     const last = this.songHistory.get(fp);
@@ -199,36 +211,61 @@ class RequestFilter {
       return { ok: false, reason: 'duplicate', message: `「${song}」最近点过啦，换一首吧~` };
     }
 
-    const lastByUser = this.userLast.get(String(userId));
+    const lastByUser = this.userLast.get(key);
     if (cooldownMs > 0 && lastByUser && now - lastByUser < cooldownMs) {
       const left = Math.ceil((cooldownMs - (now - lastByUser)) / 1000);
       return { ok: false, reason: 'cooldown', message: `${nickname} 点歌太快啦，${left}秒后再来~` };
     }
 
-    const queued = this.userQueue.get(String(userId)) || 0;
+    const queued = this.userQueue.get(key) || 0;
     if (maxPerUser > 0 && queued >= maxPerUser) {
       return { ok: false, reason: 'user-queue-full', message: `${nickname} 已经排了${queued}首，先听完吧~` };
     }
 
+    // ---- 通过：立刻预留（这一步是关键，不能延后到搜索成功之后）----
+    this.songHistory.set(fp, now);
+    this.userLast.set(key, now);
+    this.userQueue.set(key, queued + 1);
+    this._gc(now, windowMs, cooldownMs);
+
     return { ok: true, fingerprint: fp };
   }
 
+  /**
+   * 回滚一次预留（搜索失败 / 条目被取消时用）。
+   * 让观众可以马上重试，而不是被去重窗口挡 15 分钟。
+   */
+  cancel({ userId, song, fingerprint }) {
+    const key = String(userId);
+    const fp = fingerprint || songFingerprint(song);
+
+    const queued = this.userQueue.get(key) || 0;
+    if (queued > 0) {
+      if (queued === 1) this.userQueue.delete(key);
+      else this.userQueue.set(key, queued - 1);
+    }
+    this.songHistory.delete(fp);
+  }
+
+  /** 清理过期记录，防止 Map 无限增长 */
+  _gc(now, windowMs, cooldownMs) {
+    for (const [k, t] of this.songHistory) {
+      if (now - t > windowMs) this.songHistory.delete(k);
+    }
+    for (const [k, t] of this.userLast) {
+      if (now - t > Math.max(cooldownMs, 60000) * 5) this.userLast.delete(k);
+    }
+  }
+
+  /** 兼容旧调用：commit 现在只是把时间戳刷新一下（名额在 check 时已经占好了） */
   commit({ userId, song, fingerprint }) {
     const now = Date.now();
     const fp = fingerprint || songFingerprint(song);
     this.songHistory.set(fp, now);
     this.userLast.set(String(userId), now);
-    this.userQueue.set(String(userId), (this.userQueue.get(String(userId)) || 0) + 1);
-
-    // 顺手清理过期记录，防止内存无限增长
     const windowMs = Number(this.config.sameSongWindowMs ?? 900000);
-    for (const [key, time] of this.songHistory) {
-      if (now - time > windowMs) this.songHistory.delete(key);
-    }
     const cooldownMs = Number(this.config.perUserCooldownMs ?? 60000);
-    for (const [key, time] of this.userLast) {
-      if (now - time > Math.max(cooldownMs, 60000) * 5) this.userLast.delete(key);
-    }
+    this._gc(now, windowMs, cooldownMs);
   }
 
   releaseUser(userId) {

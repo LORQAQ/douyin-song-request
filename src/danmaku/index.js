@@ -35,6 +35,17 @@ class DanmakuService extends EventEmitter {
     return this.sourceName;
   }
 
+  /**
+   * 轮询轮数（转发自当前弹幕源）。
+   *
+   * 用途：判断「通道是不是真的死了」。只看"多久没弹幕"会把安静的直播间
+   * 误判成故障，而轮数只要通道活着就会一直涨 —— 这是可靠得多的信号。
+   */
+  get rounds() {
+    const s = this.source;
+    return s && typeof s.rounds === 'number' ? s.rounds : 0;
+  }
+
   async start() {
     const cfg = this.config || {};
     const source = String(cfg.source || 'native').toLowerCase();

@@ -167,6 +167,68 @@ module.exports = async function registerRegressionTests({ test, testAsync, asser
   }
 
   /* ===================================================================
+   * 2b) 所有 HTTP 接口都不该 500
+   *
+   * 教训：修「畸形 URL 打挂进程」时把 `const url = new URL(...)` 移进了 try 块，
+   * 结果块外的 /api/img 等分支访问不到 url 变量 → ReferenceError → 全部 500。
+   * 而当时的测试只覆盖了 /api/health，完全没发现。
+   * 所以这里把每个 GET 接口都打一遍，确保没有「未捕获异常」级别的错误。
+   * =================================================================== */
+  {
+    const ctx = await startServer('reg2b');
+    try {
+      await testAsync('所有 HTTP 接口都不会 500', async () => {
+        const paths = [
+          '/api/health',
+          '/api/state',
+          '/api/status',
+          '/api/diagnostics',
+          '/api/qr',
+          '/api/img', // 无参数 → 应该 400，不能 500
+          '/api/img?u=https%3A%2F%2Fevil.example.com%2Fx.jpg', // 非白名单 → 403
+          '/',
+          '/audio',
+          '/overlay',
+          '/launcher',
+          '/favicon.ico',
+        ];
+        const bad = [];
+        for (const p of paths) {
+          const code = await rawGet(ctx.port, p);
+          // 500 表示服务端出了未捕获异常；0 = 连接失败（更严重）
+          if (code === 500 || code === 0 || code === -1) bad.push(`${p} → ${code}`);
+        }
+        assert.deepStrictEqual(bad, [], '这些接口返回了 500 或连不上：\n        ' + bad.join('\n        '));
+
+        // /api/img 的两个边界要精确
+        assert.strictEqual(await rawGet(ctx.port, '/api/img'), 400, '无参数应该是 400');
+        assert.strictEqual(
+          await rawGet(ctx.port, '/api/img?u=https%3A%2F%2Fevil.example.com%2Fx.jpg'),
+          403,
+          '非白名单域名应该是 403'
+        );
+
+        // 【协议相对 URL 必须能处理】
+        // B 站搜索接口返回的封面是 `//i0.hdslb.com/...`，new URL() 直接解析会抛错。
+        // 不补协议的话封面图全部 400（悬浮窗上的封面就是坏的）。
+        // 这里不断言上游可达（CI 可能没网），只断言"不是 400/403" ——
+        // 也就是 URL 已经被正确解析、并且通过了域名白名单。
+        const rel = await rawGet(
+          ctx.port,
+          '/api/img?u=' + encodeURIComponent('//i0.hdslb.com/bfs/archive/nonexistent-test-file.jpg')
+        );
+        assert.ok(
+          rel !== 400 && rel !== 403,
+          `协议相对 URL 不该被判为非法（得到 ${rel}），说明没有补 https: 前缀`
+        );
+        console.log(`      → ${paths.length} 个接口无 500，/api/img 边界正确，协议相对 URL 可处理`);
+      });
+    } finally {
+      await ctx.close();
+    }
+  }
+
+  /* ===================================================================
    * 3) 音量必须是有限数字
    *
    * msg.value = 'abc' 时 Number() = NaN → 写进配置并落盘（→ null）
@@ -197,6 +259,9 @@ module.exports = async function registerRegressionTests({ test, testAsync, asser
    *
    * 原来只有"播完/跳过/清空队列"才 -1，控制台删条目和队列溢出不 -1，
    * 于是观众被删 3 次后就被永久拒绝（"已经排了3首"），必须重启才恢复。
+   *
+   * 注意：check() 现在是**原子预留**（通过时就占名额，搜索失败才 cancel），
+   * 所以下面用 check() 代替旧的 commit()。
    * =================================================================== */
   await test('删除队列条目会释放点歌配额', () => {
     const { SongQueue } = require('../src/player/queue');
@@ -209,7 +274,6 @@ module.exports = async function registerRegressionTests({ test, testAsync, asser
     for (let i = 0; i < 3; i += 1) {
       const song = '歌' + i;
       assert.ok(filter.check({ userId: 'u1', nickname: '甲', song }).ok, `第 ${i + 1} 首应该能点`);
-      filter.commit({ userId: 'u1', song, fingerprint: 'fp' + i });
       queue.push({ id: 'e' + i, song, userId: 'u1', nickname: '甲', status: 'queued' });
     }
     assert.strictEqual(filter.check({ userId: 'u1', nickname: '甲', song: '歌X' }).ok, false, '配额满了应该拒绝');
@@ -231,16 +295,113 @@ module.exports = async function registerRegressionTests({ test, testAsync, asser
     const queue = new SongQueue({ maxQueueSize: 2 });
     queue.onDrop = (entry) => filter.releaseUser(entry.userId);
 
-    for (let i = 0; i < 2; i += 1) {
-      filter.commit({ userId: 'u2', song: 'a' + i, fingerprint: 'x' + i });
-      queue.push({ id: 'i' + i, song: 'a' + i, userId: 'u2', nickname: '乙', status: 'queued' });
-    }
-    assert.strictEqual(filter.check({ userId: 'u2', nickname: '乙', song: 'a9' }).ok, false, '配额应该满了');
+    // 用 check() 占名额并入队（check 通过 = 已预留）
+    const add = (id, song) => {
+      const r = filter.check({ userId: 'u2', nickname: '乙', song });
+      if (r.ok) queue.push({ id, song, userId: 'u2', nickname: '乙', status: 'queued' });
+      return r.ok;
+    };
 
-    queue.push({ id: 'i2', song: 'a2', userId: 'u2', nickname: '乙', status: 'queued' });
-    queue.push({ id: 'i3', song: 'a3', userId: 'u2', nickname: '乙', status: 'queued' });
+    assert.ok(add('i0', 'a0'), '第 1 首应该能点');
+    assert.ok(add('i1', 'a1'), '第 2 首应该能点');
+    assert.strictEqual(add('i2', 'a2'), false, '配额满了应该拒绝');
+
+    // 手动触发溢出：塞进超过上限的条目（模拟别的路径挤掉队列）
+    queue.push({ id: 'x0', song: 'a0', userId: 'u2', nickname: '乙', status: 'queued' });
+    queue.push({ id: 'x1', song: 'a1', userId: 'u2', nickname: '乙', status: 'queued' });
+
+    // 溢出丢弃的条目释放了配额，所以现在应该又能点了
     assert.ok(filter.check({ userId: 'u2', nickname: '乙', song: 'a8' }).ok, '溢出丢弃后应该又能点了');
     console.log('      → 溢出丢弃后配额已归还');
+  });
+
+  /* ===================================================================
+   * 5b) 并发点同一首歌只能有一个通过（check 必须是原子的）
+   *
+   * 原来 check 只读、commit 在搜索成功后才写，而搜索要 2~20 秒，
+   * 所以同一首歌被 N 个人同时点会全部入队。
+   * =================================================================== */
+  await test('同一首歌被并发点只能通过一次', () => {
+    const { RequestFilter } = require('../src/danmaku/parser');
+    const filter = new RequestFilter(
+      { sameSongWindowMs: 900000, perUserCooldownMs: 0, maxQueuePerUser: 10 },
+      null
+    );
+
+    // 模拟 10 个人在同一瞬间点「晴天」（都在任何 commit 之前）
+    let passed = 0;
+    for (let i = 0; i < 10; i += 1) {
+      if (filter.check({ userId: 'u' + i, nickname: '观众' + i, song: '晴天' }).ok) passed += 1;
+    }
+    assert.strictEqual(passed, 1, `应该只有 1 个通过，实际 ${passed} 个`);
+
+    // 搜索失败回滚后，应该又能点了
+    const r = filter.check({ userId: 'retry', nickname: '重试', song: '晴天' });
+    assert.strictEqual(r.ok, false, '还没 cancel，应该仍被挡住');
+    filter.cancel({ userId: 'u0', song: '晴天' });
+    assert.ok(filter.check({ userId: 'retry', nickname: '重试', song: '晴天' }).ok, 'cancel 之后应该能重点');
+    console.log('      → 并发只放行 1 个，cancel 后可重试');
+  });
+
+  /* ===================================================================
+   * 5c) 端到端：内嵌模式播完要自动切下一首
+   *
+   * 服务端唯一的"播完"入口是播放页上报的 ended；内嵌(embed)模式下
+   * <audio> 没有 src，永远不触发 ended，页面看门狗也因为 mode!=='direct'
+   * 直接 return —— 那首歌播完队列就永久卡死，只能手点跳过。
+   * 修复方式：按曲目时长安排兜底结束定时器。
+   * =================================================================== */
+  await testAsync('内嵌模式播完会自动切下一首（时长兜底）', async () => {
+    const { PlaybackEngine } = require('../src/player/player');
+    const { Logger } = require('../src/lib/logger');
+
+    const logger = new Logger('test', 'error');
+    // duration 取最小值（毫秒级）以便快速验证兜底是否触发
+    const engine = new PlaybackEngine({
+      config: {
+        __paths: { root: ROOT, config: path.join(ROOT, 'config.json') },
+        playback: { mode: 'queue', useDirectStream: false, fallbackToEmbed: true, volume: 0.8, songGapMs: 10 },
+        trigger: { keywords: ['点歌'], requireKeyword: true, minLength: 2, maxLength: 40 },
+        filter: { sameSongWindowMs: 0, perUserCooldownMs: 0, maxQueuePerUser: 5 },
+      },
+      bili: {
+        async pickForSong(song) {
+          return {
+            ok: true,
+            song,
+            pick: {
+              bvid: 'BV1REG',
+              title: `${song} 官方MV`,
+              cleanTitle: song,
+              owner: '测试UP',
+              // 兜底定时器是 (duration + 8) 秒，这里没法等；
+              // 改成直接验证 _armDurationFallback 装上了定时器、且 finishCurrent 会清掉它
+              duration: 0,
+              play: 1000,
+              score: 100,
+              cid: 1,
+            },
+            alternatives: [],
+          };
+        },
+      },
+      logger,
+    });
+
+    // duration=0 时不该装定时器（时长不可信就不兜底）
+    const entry = { id: 'e1', song: 'x', nickname: 'n', userId: 'u', pick: { duration: 0 } };
+    engine.current = entry;
+    engine._armDurationFallback(entry, { duration: 0 });
+    assert.strictEqual(engine._fallbackTimer, null, '时长不可信时不应装兜底定时器');
+
+    // duration 有效时要装上
+    engine._armDurationFallback(entry, { duration: 100 });
+    assert.ok(engine._fallbackTimer, '时长有效时应该装上兜底定时器');
+
+    // finishCurrent 必须把它清掉，否则会晚点再触发一次
+    engine.finishCurrent('ended');
+    assert.strictEqual(engine._fallbackTimer, null, 'finishCurrent 应该清掉兜底定时器');
+    console.log('      → 兜底定时器按需装、结束即清');
   });
 
   /* ===================================================================

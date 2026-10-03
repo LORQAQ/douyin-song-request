@@ -165,6 +165,9 @@ async function main() {
   const watchdog = {
     lastChatAt: 0,
     reconnectAt: 0,
+    /** 上一次看到的轮询轮数 + 时间，用来判断"通道是不是真的死了" */
+    lastRounds: -1,
+    lastRoundsAt: Date.now(),
     memorySamples: [],
     timer: null,
     start() {
@@ -176,14 +179,38 @@ async function main() {
         const chats = danmaku.chatCount;
         if (chats > 0) this.lastChatAt = danmaku.lastChatAt || Date.now();
 
-        const silent = this.lastChatAt && Date.now() - this.lastChatAt > 180000;
+        /**
+         * 【判断通道是否真的死了】
+         *
+         * 原来只看"3 分钟没弹幕就重连"，问题是：一首 4 分钟的歌 + 观众不爱打字，
+         * 就会一直被判定为异常 —— 每 2 分钟 stop() + start() 一轮，
+         * 期间到达的弹幕直接丢失，还每次都要重新解析房间（增加被风控的概率）。
+         *
+         * 真正的死通道有个更可靠的信号：**轮询轮数不再增长**。
+         * 所以改成：只有"轮数长时间不涨"（或者 status 明确不是 online）才重连。
+         * 房间安静但通道健在时，轮数是一直在涨的，不会误判。
+         */
+        const rounds = Number(danmaku.rounds || 0);
+        if (rounds !== this.lastRounds) {
+          this.lastRounds = rounds;
+          this.lastRoundsAt = Date.now();
+        }
+        const roundsStuck = Date.now() - this.lastRoundsAt > 300000; // 5 分钟轮数没动
+
+        const silent = this.lastChatAt && Date.now() - this.lastChatAt > 600000; // 10 分钟没弹幕
         const offline = danmaku.status.state !== 'online';
-        if (source !== 'mock' && (offline || silent) && Date.now() - this.reconnectAt > 120000) {
+
+        // 通道真的没在动：轮数卡住，或者明确离线
+        const dead = offline || roundsStuck;
+        // 安静但通道还在轮询 → 只在"很久很久"没弹幕时才顺手重连一次（10 分钟 + 10 分钟节流）
+        const maybeIdle = silent && roundsStuck;
+
+        if (source !== 'mock' && (dead || maybeIdle) && Date.now() - this.reconnectAt > 600000) {
           this.reconnectAt = Date.now();
           logger.warn(
             offline
               ? `检测到弹幕通道异常（${danmaku.status.detail || danmaku.status.state}），自动重连...`
-              : '3 分钟没收到任何弹幕，自动重连弹幕通道...'
+              : `弹幕通道 5 分钟没有轮询进展，自动重连...`
           );
           danmaku.stop().catch(() => {});
           setTimeout(() => {

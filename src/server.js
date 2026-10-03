@@ -520,9 +520,14 @@ class WebServer {
     // 会让 decodeURIComponent 抛 URIError，而这个 async 处理函数的返回值
     // 没人接，异常会变成 unhandledRejection，Node ≥15 默认直接结束进程。
     // 也就是任何网页 fetch 一下就能把主播的点歌程序打挂。
+    //
+    // 注意：url 必须声明在 try **外面**（用 let）—— 下面的 /api/img 等分支
+    // 还要用它的 searchParams。之前写成 const 在 try 内，块外访问会抛
+    // ReferenceError，表现成这些接口全部 500。
     let pathname = '/';
+    let url = null;
     try {
-      const url = new URL(req.url || '/', this.baseUrl);
+      url = new URL(req.url || '/', this.baseUrl);
       pathname = decodeURIComponent(url.pathname);
     } catch (err) {
       // 非法 URL / 非法百分号编码：返回 400，不要影响进程
@@ -660,12 +665,18 @@ class WebServer {
 
   /** B站图片防盗链：服务端代取一次再吐给页面 */
   async _proxyImage(url, res) {
-    const target = url.searchParams.get('u');
+    let target = url.searchParams.get('u');
     if (!target) {
       res.writeHead(400);
       res.end('missing u');
       return;
     }
+    // 【必须补齐协议】B 站搜索接口返回的封面是**协议相对** URL
+    // （形如 `//i0.hdslb.com/bfs/archive/xxx.jpg`），`new URL()` 直接解析会抛错。
+    // 不补的话封面图全部 400，悬浮窗和控制台上的封面就是坏的。
+    if (target.startsWith('//')) target = 'https:' + target;
+    else if (/^[\w.-]+\.[a-z]{2,}\//i.test(target)) target = 'https://' + target;
+
     let parsed;
     try {
       parsed = new URL(target);
@@ -674,25 +685,70 @@ class WebServer {
       res.end('bad url');
       return;
     }
+    if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+      res.writeHead(400);
+      res.end('bad protocol');
+      return;
+    }
     const allowed = /(^|\.)(hdslb\.com|bilibili\.com|douyinpic\.com|douyincdn\.com|bytedance\.com)$/i;
     if (!allowed.test(parsed.hostname)) {
       res.writeHead(403);
       res.end('host not allowed');
       return;
     }
-    const upstream = await fetch(target, {
-      headers: {
-        Referer: 'https://www.bilibili.com/',
-        'User-Agent':
-          'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
-      },
-    });
+
+    // 【超时 + 大小上限】这是个未鉴权的 GET 接口，上游慢/不回包时
+    // 这个请求会一直挂着，而 arrayBuffer() 是全量进内存 ——
+    // 几十个并发大图就能把内存和连接数顶上去。封面图本来就很小（几十 KB）。
+    const MAX_BYTES = 5 * 1024 * 1024;
+    let upstream;
+    try {
+      upstream = await fetch(target, {
+        headers: {
+          Referer: 'https://www.bilibili.com/',
+          'User-Agent':
+            'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36',
+        },
+        signal: AbortSignal.timeout(8000),
+      });
+    } catch (err) {
+      const timedOut = err.name === 'TimeoutError';
+      res.writeHead(timedOut ? 504 : 502, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end(timedOut ? 'upstream timeout' : 'upstream failed');
+      return;
+    }
+
     if (!upstream.ok) {
+      try {
+        await upstream.body?.cancel();
+      } catch {
+        /* ignore */
+      }
       res.writeHead(upstream.status);
       res.end('upstream error');
       return;
     }
+
+    // content-length 能提前判断就提前拒绝，省得把大文件读进内存
+    const len = Number(upstream.headers.get('content-length') || 0);
+    if (len > MAX_BYTES) {
+      try {
+        await upstream.body?.cancel();
+      } catch {
+        /* ignore */
+      }
+      res.writeHead(413, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('image too large');
+      return;
+    }
+
     const buf = Buffer.from(await upstream.arrayBuffer());
+    if (buf.length > MAX_BYTES) {
+      res.writeHead(413, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.end('image too large');
+      return;
+    }
+
     res.writeHead(200, {
       'Content-Type': upstream.headers.get('content-type') || 'image/jpeg',
       'Cache-Control': 'public, max-age=86400',

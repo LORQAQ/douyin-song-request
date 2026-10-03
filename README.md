@@ -6,7 +6,7 @@
 <img alt="Node" src="https://img.shields.io/badge/Node.js-%E2%89%A518-339933?logo=node.js&logoColor=white">
 <img alt="Platform" src="https://img.shields.io/badge/Platform-Windows-0078D4?logo=windows&logoColor=white">
 <img alt="License" src="https://img.shields.io/badge/License-MIT-green">
-<img alt="Tests" src="https://img.shields.io/badge/Tests-83%20passed-brightgreen">
+<img alt="Tests" src="https://img.shields.io/badge/Tests-87%20passed-brightgreen">
 <img alt="Deps" src="https://img.shields.io/badge/Dependencies-1%20(ws)-blue">
 </p>
 

@@ -171,6 +171,13 @@ class PlaybackEngine extends EventEmitter {
         // 风控/超时这类临时问题，安排一次后台自动重试，不用观众再点一遍
         const transient = /风控|超时|网络|频繁|412|code=-799/i.test(entry.failReason);
         const scheduled = transient && this.scheduleRetry(entry);
+        // 【失败要归还预留名额】check() 是原子预留（防止并发重复点同一首歌），
+        // 永久失败（比如真的搜不到这首歌）时必须回滚，否则观众 15 分钟内
+        // 再点这首歌会被"最近点过啦"挡住 —— 明明一次都没播成。
+        // 临时失败（已安排自动重试）则保留预留，避免重试期间又被重复点。
+        if (!scheduled) {
+          this.filter.cancel({ userId: entry.userId, song: entry.song, fingerprint: entry.fingerprint });
+        }
         this.logger.warn(
           `没找到「${entry.song}」的合适视频：${entry.failReason}${scheduled ? '（已安排 45 秒后自动重试）' : ''}`
         );
@@ -202,6 +209,8 @@ class PlaybackEngine extends EventEmitter {
       entry.status = STATUS.FAILED;
       entry.failReason = err.message;
       this.stats.failed += 1;
+      // 抛异常属于意外失败，同样要归还预留名额
+      this.filter.cancel({ userId: entry.userId, song: entry.song, fingerprint: entry.fingerprint });
       this.logger.error(`搜索「${entry.song}」出错：`, err.message);
       this.queue.remove(entry.id);
       this.queue.archive(entry);
