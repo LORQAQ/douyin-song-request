@@ -2267,8 +2267,21 @@ class BilibiliClient {
         try {
           const kw = `${name} ${(meta && meta.songName) || song}`;
           const hr = await this._searchRawWithKeyword(song, kw);
-          const cands = (hr.candidates || []).filter((c) =>
-            String(c.owner || c.author || '').toLowerCase().includes(name.toLowerCase())
+          /**
+           * 【补搜结果要筛一遍】不能因为是白名单 UP 主就照单全收。
+           *
+           * 实测「夜曲」：JLRS 补搜返回了
+           * 「"宵夜第二弹"《无期迷途》「宵**色夜曲**」主题曲」——
+           * 标题里那两个字确实连着，但它根本不是周杰伦的《夜曲》。
+           * 加上白名单加分后它一路胜出，把正确答案挤掉了。
+           *
+           * 所以只收**标题确实像这首歌**的（titleMatch 不是 poor/partial 边缘）。
+           */
+          const cands = (hr.candidates || []).filter(
+            (c) =>
+              String(c.owner || c.author || '').toLowerCase().includes(name.toLowerCase()) &&
+              c.titleMatch !== 'poor' &&
+              Number(c.score) >= 60
           );
           if (!cands.length) continue;
           const seen = new Set((search.candidates || []).map((c) => c.bvid));
@@ -2458,6 +2471,31 @@ class BilibiliClient {
       const withTrust = search.candidates.map((c) => {
         const uploader = String(c.owner || c.author || '').trim();
         if (!uploader) return c;
+
+        /**
+         * 【加分前先确认它确实是这首歌】
+         *
+         * 白名单 UP 主也可能投了别的歌，而搜索是模糊的。
+         * 实测「夜曲」（周杰伦）：JLRS 补搜返回了
+         * 「"宵夜第二弹"《无期迷途》「宵**色夜曲**」主题曲」——
+         * 标题里那两个字确实连着（titleMatch=contains），
+         * 但它根本不是这首歌，加上白名单加分后一路胜出，把正确答案挤掉了。
+         *
+         * 判断"确实是这首歌"：标题以歌名开头，或者歌名覆盖率够高。
+         * 只给这类候选加分，其余的按普通候选参与竞争（不额外抬）。
+         */
+        const fullSong = normalizeSongText(String(song || ''));
+        const qn = normalizeForCompare(fullSong);
+        const tn = normalizeForCompare(normalizeSongText(String(c.title || '')));
+        const titleMatch = String(c.titleMatch || '');
+        const looksLikeSong =
+          !qn ||
+          titleMatch === 'exact' ||
+          titleMatch === 'prefix' ||
+          tn.startsWith(qn) ||
+          (tn.includes(qn) && qn.length / Math.max(tn.length, 1) >= 0.34);
+        if (!looksLikeSong) return c;
+
         if (isHifi(uploader)) {
           hifiHit += 1;
           boosted += 1;
