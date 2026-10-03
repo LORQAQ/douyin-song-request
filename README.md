@@ -8,7 +8,11 @@
 <img alt="License" src="https://img.shields.io/badge/License-MIT-green">
 <img alt="Tests" src="https://img.shields.io/badge/Tests-87%20passed-brightgreen">
 <img alt="Deps" src="https://img.shields.io/badge/Dependencies-1%20(ws)-blue">
+<a href="https://github.com/LORQAQ/douyin-song-request/releases/latest"><img alt="Release" src="https://img.shields.io/github/v/release/LORQAQ/douyin-song-request?label=release&color=blue"></a>
 </p>
+
+> **[⬇ 下载最新版](https://github.com/LORQAQ/douyin-song-request/releases/latest)**
+> —— Release 页面有源码包，还有**歌单悬浮窗的预编译程序**（不想自己编译就下那个）。
 
 - 面向 **抖音直播伴侣**（靠「系统声音」把音乐混进去，不用装虚拟声卡）
 - 弹幕抓取有 **三条独立通道**，哪条通用哪条（HTTP 长轮询 / 浏览器插件转发 / 浏览器抓取）
