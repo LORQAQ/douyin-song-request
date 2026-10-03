@@ -160,6 +160,8 @@ const skip = (name, why) => {
         skip('仓库文件树检查', 'API 限流');
       } else {
         const j = JSON.parse(raw);
+        // 注意：这个接口的结果会被 GitHub 缓存几十秒 —— 刚推完就查可能拿到旧列表。
+        // 关键文件的存在性判断用 contents 接口（上面那些），那个是实时的。
         const paths = (j.tree || []).map((x) => x.path);
         check('文件总数合理', paths.length > 50 && paths.length < 200, `${paths.length} 个文件`);
         check('没有 node_modules', !paths.some((p) => p.startsWith('node_modules/')), '');
