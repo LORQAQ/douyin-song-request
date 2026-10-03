@@ -121,7 +121,12 @@ async function api(method, url, body) {
     if (!fs.existsSync(abs)) continue;
     let sha;
     try {
-      sha = execFileSync('git', ['hash-object', rel], { cwd: ROOT, encoding: 'utf8' }).trim();
+      // 【必须加 --no-filters】
+      // core.autocrlf=true 时，`git hash-object` 会先把 CRLF 转成 LF 再算哈希，
+      // 而 GitHub 上存的是文件原始字节。于是所有 CRLF 文件（.bat / .ps1）
+      // 算出来的 sha 永远对不上远端 —— 表现成"每次都报告这几个文件需要上传"，
+      // 内容明明一模一样。--no-filters 让它按原始字节算，和远端一致。
+      sha = execFileSync('git', ['hash-object', '--no-filters', rel], { cwd: ROOT, encoding: 'utf8' }).trim();
     } catch {
       continue;
     }

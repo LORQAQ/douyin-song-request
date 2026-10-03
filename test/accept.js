@@ -266,7 +266,10 @@ const skip = (name, why) => {
               for (const rel of tracked) {
                 let sha = '';
                 try {
-                  sha = g(['hash-object', rel]);
+                  // 【--no-filters 必须加】core.autocrlf=true 时 git hash-object 会
+                  // 先把 CRLF 转成 LF 再算 sha，而远端存的是原始字节 ——
+                  // 于是所有 .bat / .ps1 永远"不一致"（假失败）。
+                  sha = g(['hash-object', '--no-filters', rel]);
                 } catch {
                   continue;
                 }
