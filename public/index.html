@@ -1,0 +1,357 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<title>点歌控制台 · 抖音点歌 → B站自动播放</title>
+<style>
+  :root {
+    --bg: #0d1117;
+    --panel: #161b22;
+    --panel-2: #1c2330;
+    --line: #2b3444;
+    --text: #e6edf3;
+    --muted: #8b98a9;
+    --brand: #ff2d55;
+    --bili: #00aeec;
+    --ok: #3fb950;
+    --warn: #d29922;
+    --err: #f85149;
+    --radius: 12px;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: radial-gradient(1200px 600px at 15% -10%, #1b2331 0%, var(--bg) 55%);
+    color: var(--text);
+    font: 14px/1.6 "Microsoft YaHei UI", "PingFang SC", system-ui, -apple-system, "Segoe UI", sans-serif;
+    min-height: 100vh;
+  }
+  a { color: var(--bili); text-decoration: none; }
+  a:hover { text-decoration: underline; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 20px 20px 60px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 14px; margin-bottom: 18px; }
+  .logo { font-size: 20px; font-weight: 700; letter-spacing: .5px; }
+  .logo span { color: var(--brand); }
+  .logo em { color: var(--bili); font-style: normal; }
+  .badge {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 10px; border-radius: 999px;
+    background: var(--panel-2); border: 1px solid var(--line);
+    font-size: 12px; color: var(--muted);
+  }
+  .badge .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+  .badge.online .dot { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .badge.offline .dot { background: var(--err); }
+  .badge.connecting .dot { background: var(--warn); animation: pulse 1s infinite; }
+  @keyframes pulse { 50% { opacity: .35; } }
+  .grid { display: grid; grid-template-columns: 1.35fr 1fr; gap: 16px; }
+  @media (max-width: 980px) { .grid { grid-template-columns: 1fr; } }
+  .card {
+    background: linear-gradient(180deg, var(--panel) 0%, #12171f 100%);
+    border: 1px solid var(--line); border-radius: var(--radius);
+    padding: 16px; margin-bottom: 16px;
+  }
+  .card h2 {
+    margin: 0 0 12px; font-size: 14px; color: var(--muted);
+    font-weight: 600; letter-spacing: 1px; text-transform: uppercase;
+    display: flex; justify-content: space-between; align-items: center;
+  }
+  .now { display: flex; gap: 14px; }
+  .now .cover {
+    width: 132px; height: 82px; border-radius: 8px; object-fit: cover;
+    background: #0b0f14; border: 1px solid var(--line); flex: none;
+  }
+  .now .meta { min-width: 0; }
+  .now .title { font-size: 17px; font-weight: 700; margin-bottom: 4px; word-break: break-all; }
+  .now .sub { color: var(--muted); font-size: 12.5px; }
+  .now .who { color: var(--brand); font-weight: 600; }
+  .empty { color: var(--muted); padding: 8px 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  button {
+    font: inherit; color: var(--text); cursor: pointer;
+    background: var(--panel-2); border: 1px solid var(--line);
+    padding: 7px 13px; border-radius: 9px; transition: .15s;
+  }
+  button:hover { border-color: #3d4a5f; background: #232c3b; }
+  button.primary { background: var(--brand); border-color: var(--brand); color: #fff; font-weight: 600; }
+  button.primary:hover { background: #ff456b; }
+  button.bili { background: var(--bili); border-color: var(--bili); color: #04222e; font-weight: 700; }
+  button.ghost { background: transparent; }
+  button.danger { color: #ffb3b3; }
+  button:disabled { opacity: .45; cursor: not-allowed; }
+  input, select {
+    font: inherit; color: var(--text); background: #0e1319;
+    border: 1px solid var(--line); border-radius: 9px; padding: 7px 10px;
+    min-width: 0;
+  }
+  input:focus, select:focus { outline: none; border-color: var(--bili); }
+  .queue { list-style: none; margin: 0; padding: 0; max-height: 420px; overflow: auto; }
+  .queue li {
+    display: flex; gap: 10px; align-items: center;
+    padding: 9px 10px; border-radius: 10px; border: 1px solid transparent;
+  }
+  .queue li + li { border-top: 1px solid #1d2430; }
+  .queue li:hover { background: #1a2130; }
+  .queue .idx { color: var(--muted); width: 18px; text-align: right; flex: none; font-variant-numeric: tabular-nums; }
+  .queue .q-main { flex: 1; min-width: 0; }
+  .queue .q-title { font-weight: 600; word-break: break-all; }
+  .queue .q-sub { color: var(--muted); font-size: 12px; word-break: break-all; }
+  .queue .q-sub b { color: #ffd479; font-weight: 600; }
+  .tag {
+    font-size: 11px; padding: 2px 7px; border-radius: 6px;
+    background: #22303f; color: #9fd0ff; flex: none;
+  }
+  .tag.searching { background: #33291a; color: #ffd479; }
+  .tag.failed { background: #3a1d1d; color: #ff9d9d; }
+  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; text-align: center; }
+  .stats div { background: var(--panel-2); border-radius: 10px; padding: 9px 4px; }
+  .stats b { display: block; font-size: 19px; }
+  .stats span { font-size: 11.5px; color: var(--muted); }
+  .log {
+    background: #080b10; border: 1px solid var(--line); border-radius: 10px;
+    padding: 10px; height: 240px; overflow: auto;
+    font: 12px/1.55 ui-monospace, Consolas, "Cascadia Mono", monospace;
+    white-space: pre-wrap; word-break: break-all;
+  }
+  .log .lv-warn { color: var(--warn); }
+  .log .lv-error { color: var(--err); }
+  .log .lv-debug { color: #6b7787; }
+  .chats { list-style: none; margin: 0; padding: 0; max-height: 230px; overflow: auto; font-size: 12.5px; }
+  .chats li { padding: 5px 2px; border-bottom: 1px dashed #1d2430; }
+  .chats .nick { color: #7ec8ff; }
+  .field { display: flex; flex-direction: column; gap: 5px; margin-bottom: 11px; }
+  .field label { font-size: 12px; color: var(--muted); }
+  .field .hint { font-size: 11.5px; color: #6b7787; }
+  .two { display: grid; grid-template-columns: 1fr 1fr; gap: 11px; }
+  details { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 11px; }
+  summary { cursor: pointer; color: #c7d2de; font-weight: 600; }
+  details[open] summary { margin-bottom: 10px; }
+  .kbd {
+    background: #0e1319; border: 1px solid var(--line); border-bottom-width: 2px;
+    border-radius: 5px; padding: 1px 6px; font-family: ui-monospace, Consolas, monospace; font-size: 12px;
+  }
+  .warnbox {
+    border: 1px solid #4a3a12; background: #2a2210; color: #ffd479;
+    border-radius: 10px; padding: 10px 12px; font-size: 13px; margin-bottom: 14px;
+  }
+  .warnbox b { color: #fff; }
+  .muted { color: var(--muted); }
+  .flex-between { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+  footer { text-align: center; color: #59636f; font-size: 12px; margin-top: 26px; }
+  .toast-host { position: fixed; right: 18px; bottom: 18px; display: flex; flex-direction: column; gap: 8px; z-index: 99; }
+  .toast-host div {
+    background: #1c2431; border: 1px solid var(--line); border-left: 3px solid var(--bili);
+    padding: 9px 13px; border-radius: 8px; box-shadow: 0 8px 24px rgba(0,0,0,.45); font-size: 13px;
+    animation: slidein .18s ease-out;
+  }
+  @keyframes slidein { from { transform: translateX(16px); opacity: 0; } }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <div class="logo">抖音<span>点歌</span> → B站<em>自动播放</em></div>
+    <div class="badge" id="badge-danmaku"><i class="dot"></i><span>弹幕：未连接</span></div>
+    <div class="badge" id="badge-audio"><i class="dot"></i><span>播放页：未打开</span></div>
+    <div class="badge" id="badge-server"><i class="dot"></i><span>服务：连接中</span></div>
+    <div class="badge" id="badge-mode"><i class="dot"></i><span>模式：排队</span></div>
+    <div style="flex:1"></div>
+    <a class="badge" href="/audio" target="_blank">🔊 打开音乐播放页</a>
+    <a class="badge" href="/overlay" target="_blank" title="透明悬浮层，给直播伴侣做窗口捕获用">📋 歌单悬浮层</a>
+    <a class="badge" href="/launcher" target="_blank">🚀 一键启动向导</a>
+  </header>
+
+  <div class="warnbox" id="warnbox" style="display:none"></div>
+
+  <div class="grid">
+    <div>
+      <div class="card">
+        <h2>正在播放 <span class="muted" id="play-state"></span></h2>
+        <div id="now-empty" class="empty">还没有在播放。等弹幕点歌，或下面手动点一首。</div>
+        <div class="now" id="now" style="display:none">
+          <img class="cover" id="now-cover" alt="封面" />
+          <div class="meta">
+            <div class="title" id="now-title">-</div>
+            <div class="sub" id="now-sub">-</div>
+            <div class="sub" id="now-link"></div>
+          </div>
+        </div>
+        <div class="row" style="margin-top:13px">
+          <button class="primary" id="btn-skip">⏭ 下一首</button>
+          <button id="btn-undo">↩ 撤销上一步</button>
+          <button id="btn-pause">⏸ 暂停</button>
+          <button id="btn-resume">▶ 继续</button>
+          <button class="ghost danger" id="btn-clear">清空队列</button>
+          <button class="ghost" id="btn-reconnect">重连弹幕</button>
+        </div>
+        <div class="hint" id="hotkeys" style="margin-top:8px">
+          快捷键：<span class="kbd">Ctrl</span>+<span class="kbd">→</span> 下一首 ·
+          <span class="kbd">Ctrl</span>+<span class="kbd">Z</span> 撤销 ·
+          <span class="kbd">Ctrl</span>+<span class="kbd">↑</span>/<span class="kbd">↓</span> 音量 ·
+          <span class="kbd">Ctrl</span>+<span class="kbd">M</span> 静音
+        </div>
+      </div>
+
+      <div class="card" id="retry-card" style="display:none">
+        <h2>待重试的点歌 <span class="muted" id="retry-count"></span></h2>
+        <div class="muted" style="font-size:12.5px;margin-bottom:8px">
+          B站偶尔会风控/超时，这些点歌没搜到，程序会自动再试；也可以点下面立刻重试。
+        </div>
+        <ul class="queue" id="retry-list"></ul>
+        <div class="row" style="margin-top:8px">
+          <button class="bili" id="btn-retry-now">立刻重试全部</button>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>点歌队列 <span class="muted" id="queue-count">0 首</span></h2>
+        <ul class="queue" id="queue"></ul>
+        <div class="empty" id="queue-empty">队列是空的</div>
+      </div>
+
+      <div class="card">
+        <h2>播放历史 <span class="muted" id="history-count"></span></h2>
+        <ul class="queue" id="history"></ul>
+        <div class="empty" id="history-empty">还没有播放记录</div>
+      </div>
+
+      <div class="card">
+        <h2>最近弹幕</h2>
+        <ul class="chats" id="chats"></ul>
+      </div>
+    </div>
+
+    <div>
+      <div class="card">
+        <h2>手动点歌 / 测试</h2>
+        <div class="field">
+          <label>歌名（走完整流程：B站搜索 → 入队 → 播放）</label>
+          <div class="row">
+            <input id="manual-song" placeholder="例如：晴天" style="flex:1" />
+            <button class="bili" id="btn-manual">点歌</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>模拟一条弹幕（会按触发词规则解析）</label>
+          <div class="row">
+            <input id="manual-nick" placeholder="观众昵称" style="width:110px" value="测试观众" />
+            <input id="manual-chat" placeholder="例如：点歌 晴天" style="flex:1" />
+            <button id="btn-inject">投递</button>
+          </div>
+          <span class="hint">只有「模拟弹幕源」模式下投递的弹幕会被处理；正式模式请直接看直播间。</span>
+        </div>
+      </div>
+
+      <div class="card">
+        <h2>开关</h2>
+        <div class="row">
+          <button id="btn-mode">切换为「立即打断」</button>
+          <button id="btn-play-mode">播放方式：纯音频</button>
+        </div>
+        <div class="field" style="margin-top:12px">
+          <label>音量 <b id="vol-label">80%</b></label>
+          <input type="range" id="volume" min="0" max="100" value="80" />
+          <span class="hint">音量作用于音乐播放页；最终大小还可以在 Windows 音量合成器里单独调。</span>
+        </div>
+        <div class="row" style="margin-top:6px">
+          <button id="btn-normalize">音量自动校准：检测中…</button>
+        </div>
+        <span class="hint" id="normalize-hint">
+          开启后会用 ffmpeg 量每首歌的响度并自动补/减音量，避免「这首很小声、下首很吵」。
+        </span>
+      </div>
+
+      <div class="card">
+        <h2>直播设置</h2>
+        <div class="field">
+          <label>抖音直播间号（live.douyin.com/ 后面那串数字）</label>
+          <div class="row">
+            <input id="cfg-rid" placeholder="例如 7456814" style="flex:1" />
+            <button class="primary" id="btn-save-rid">保存并重连</button>
+          </div>
+        </div>
+        <div class="field">
+          <label>触发词（逗号分隔）</label>
+          <div class="row">
+            <input id="cfg-keywords" style="flex:1" />
+            <button id="btn-save-keywords">保存</button>
+          </div>
+          <span class="hint">弹幕里出现这些词才算点歌，例如「点歌 晴天」「来一首 七里香」。</span>
+        </div>
+        <details>
+          <summary>高级设置</summary>
+          <div class="two">
+            <div class="field">
+              <label>弹幕来源</label>
+              <select id="cfg-source">
+                <option value="native">HTTP 长轮询（默认，纯本机请求）</option>
+                <option value="extension">浏览器插件转发（最稳，需装扩展）</option>
+                <option value="browser">浏览器抓取（备用，需 Chrome）</option>
+                <option value="mock">模拟（只手动测试，不连抖音）</option>
+              </select>
+            </div>
+            <div class="field">
+              <label>最低播放量</label>
+              <input id="cfg-minplay" type="number" min="0" step="1000" />
+            </div>
+            <div class="field">
+              <label>视频最短时长（秒）</label>
+              <input id="cfg-mindur" type="number" min="10" />
+            </div>
+            <div class="field">
+              <label>视频最长时长（秒）</label>
+              <input id="cfg-maxdur" type="number" min="30" />
+            </div>
+            <div class="field">
+              <label>同一首歌冷却（分钟）</label>
+              <input id="cfg-samewin" type="number" min="0" />
+            </div>
+            <div class="field">
+              <label>同一个人冷却（秒）</label>
+              <input id="cfg-cooldown" type="number" min="0" />
+            </div>
+          </div>
+          <div class="field">
+            <label>B站 Cookie（可选，提高搜索与音质稳定性）</label>
+            <div class="row">
+              <input id="cfg-bilicookie" placeholder="SESSDATA=xxx; bili_jct=xxx; ..." style="flex:1" />
+              <button id="btn-save-cookie">保存</button>
+            </div>
+            <span class="hint">在浏览器登录B站后按 F12 → Application → Cookies 复制，或运行 <span class="kbd">npm run cookie</span> 自动读取。</span>
+          </div>
+          <div class="field">
+            <label>弹幕屏蔽词（逗号分隔，逗号前后都算）</label>
+            <div class="row">
+              <input id="cfg-blacklist" style="flex:1" />
+              <button id="btn-save-blacklist">保存</button>
+            </div>
+          </div>
+        </details>
+      </div>
+
+      <div class="card">
+        <h2>数据 / 日志</h2>
+        <div class="stats">
+          <div><b id="st-chat">0</b><span>看到弹幕</span></div>
+          <div><b id="st-req">0</b><span>点歌</span></div>
+          <div><b id="st-play">0</b><span>已播完</span></div>
+          <div><b id="st-fail">0</b><span>没找到</span></div>
+        </div>
+        <div class="log" id="log" style="margin-top:12px"></div>
+      </div>
+    </div>
+  </div>
+
+  <footer>
+    本地运行 · 端口 <span id="f-port"></span> ·
+    直播间弹幕只用于本机点歌，不会上传任何数据 ·
+    <a href="/api/status" target="_blank">查看接口状态</a>
+  </footer>
+</div>
+<div class="toast-host" id="toasts"></div>
+
+<script src="/app.js"></script>
+</body>
+</html>

@@ -1,0 +1,67 @@
+@echo off
+title Douyin Song Request - Start All
+cd /d "%~dp0.."
+
+echo.
+echo   ============================================
+echo      Douyin Song Request - Start All
+echo   ============================================
+echo.
+
+rem ---- 1) Start the server if not already running ----
+netstat -ano 2>nul | findstr /r /c:"127.0.0.1:8787 .*LISTENING" >nul
+if not errorlevel 1 (
+  echo   [1/4] Server already running - skip
+  goto :skip_server
+)
+
+echo   [1/4] Starting server ...
+start "DouyinSongRequest" /min cmd /c "node src\index.js"
+echo         waiting for it to come up ...
+set /a _wait=0
+:wait_loop
+timeout /t 1 /nobreak >nul
+set /a _wait+=1
+netstat -ano 2>nul | findstr /r /c:"127.0.0.1:8787 .*LISTENING" >nul
+if not errorlevel 1 goto :server_ready
+if %_wait% lss 20 goto :wait_loop
+echo         WARNING: server did not come up in 20s - check Node.js
+goto :skip_server
+
+:server_ready
+echo         Server ready: http://127.0.0.1:8787/
+
+:skip_server
+echo.
+echo   [2/4] Opening console ...
+start "" "http://127.0.0.1:8787/"
+
+echo   [3/4] Opening audio page (this one makes sound) ...
+timeout /t 1 /nobreak >nul
+start "" "http://127.0.0.1:8787/audio"
+
+echo   [4/4] Starting song-list overlay ...
+tasklist /fi "imagename eq SongOverlay.exe" 2>nul | findstr /i "SongOverlay.exe" >nul
+if not errorlevel 1 (
+  echo         Overlay already running - skip
+) else (
+  start "" "%~dp0..\overlay\bin\SongOverlay.exe"
+)
+
+echo.
+echo   ============================================
+echo      Ready
+echo   ============================================
+echo.
+echo   Console   http://127.0.0.1:8787/
+echo   Audio     http://127.0.0.1:8787/audio   (this one makes sound)
+echo   Overlay   bottom-left corner of the screen
+echo.
+echo   Tips:
+echo     - Audio page should show a GREEN line when it can feed the stream
+echo     - Move the overlay: desktop shortcut "Overlay Positioner"
+echo     - Stop everything: desktop shortcut "Stop"
+echo.
+echo   This window closes in 6 seconds ...
+timeout /t 6 /nobreak >nul
+exit

@@ -1,0 +1,60 @@
+{
+  "name": "douyin-song-request",
+  "version": "1.0.0",
+  "private": true,
+  "description": "抖音弹幕点歌 → 自动在 B 站找到原版并播放。给直播主播用的纯音频点歌工具，含歌单悬浮窗。",
+  "type": "commonjs",
+  "main": "src/index.js",
+  "license": "MIT",
+  "keywords": [
+    "douyin",
+    "bilibili",
+    "live",
+    "danmaku",
+    "弹幕点歌",
+    "直播",
+    "点歌"
+  ],
+  "os": [
+    "win32"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "start": "node src/index.js",
+    "stop": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-all.ps1",
+    "stop:all": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/stop-all.ps1 -All",
+    "dev": "node src/index.js --mock --open",
+    "mock": "node src/index.js --mock",
+    "test": "node test/run.js",
+    "test:online": "node test/run.js --online",
+    "test:stress": "node test/stress.js 1000",
+    "test:bench": "node --expose-gc test/bench.js",
+    "test:soak": "node test/soak.js 5 50",
+    "test:mem": "node test/mem-profile.js",
+    "check": "node scripts/checkall.js",
+    "check:browser": "node scripts/browser-check.js",
+    "check:danmaku": "node scripts/browser-danmaku-check.js",
+    "overlay": "overlay\\bin\\SongOverlay.exe",
+    "overlay:fixed": "overlay\\bin\\SongOverlay.exe --fixed",
+    "overlay:place": "overlay\\bin\\OverlayPlacer.exe",
+    "overlay:where": "overlay\\bin\\WhereIsIt.exe",
+    "overlay:build": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-overlay.ps1",
+    "doctor": "node scripts/doctor.js",
+    "cookie": "node scripts/get-cookie.js",
+    "config": "node scripts/config.js",
+    "find-room": "node scripts/find-room.js",
+    "probe": "node scripts/probe-connect.js",
+    "rank": "node scripts/rank-debug.js",
+    "watch": "node scripts/watch.js",
+    "pin": "node scripts/make-pins.js",
+    "index": "node scripts/index-collections.js"
+  },
+  "dependencies": {
+    "ws": "^8.18.0"
+  },
+  "optionalDependencies": {
+    "playwright-core": "^1.63.0"
+  }
+}

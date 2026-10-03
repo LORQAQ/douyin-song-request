@@ -1,0 +1,13 @@
+node_modules/
+config.json
+pins.json
+collections-index.json
+music-meta-cache.json
+.bili-wbi-keys.json
+.chrome-player-profile/
+.bili-login-profile/
+.browser-profile/
+audio-listen-backup.json
+logs/
+*.log
+overlay/bin/

@@ -1,0 +1,256 @@
+'use strict';
+
+const { uniq } = require('../lib/util');
+
+const PUNCT = /[\s\u3000·・~～!！?？,，.。、:：;；'"“”‘’()（）\[\]【】<>《》\-—_+*/\\|@#$%^&^]+/g;
+
+/** 全角转半角 + 去零宽字符 + 折叠空白 */
+function normalizeText(input) {
+  let s = String(input || '');
+  s = s.replace(/[\u200b-\u200f\u2028-\u202f\ufeff]/g, '');
+  s = s.replace(/[\uff01-\uff5e]/g, (ch) => String.fromCharCode(ch.charCodeAt(0) - 0xfee0));
+  s = s.replace(/[\u3000]/g, ' ');
+  return s.trim();
+}
+
+/** 用于比对的歌曲指纹：去标点、去空白、小写 */
+function songFingerprint(title) {
+  return normalizeText(title)
+    .toLowerCase()
+    .replace(PUNCT, '')
+    .replace(/(official|mv|官方|完整版|高音质|无损|原唱|正式版|高清|1080p|4k)/g, '')
+    .trim();
+}
+
+/** 解析一条弹幕，判断是否是点歌请求 */
+function parseRequest(content, config = {}) {
+  const raw = normalizeText(content);
+  if (!raw) return null;
+
+  const keywords = config.keywords && config.keywords.length ? config.keywords : ['点歌'];
+  const requireKeyword = config.requireKeyword !== false;
+
+  // 命中的触发词：取最长的那个，避免「点」先于「点歌」匹配
+  let hitKeyword = null;
+  for (const kw of [...keywords].sort((a, b) => b.length - a.length)) {
+    if (!kw) continue;
+    if (raw.toLowerCase().includes(kw.toLowerCase())) {
+      hitKeyword = kw;
+      break;
+    }
+  }
+
+  if (requireKeyword && !hitKeyword) return null;
+  if (!requireKeyword && !config.allowAnyDanmaku && !hitKeyword) {
+    // 不要求关键词但又没命中：交给调用方决定（默认仍然只认关键词）
+    return null;
+  }
+
+  let song = raw;
+  const stripWords = config.stripWords || [];
+  if (hitKeyword) {
+    song = song.replace(new RegExp(escapeRegExp(hitKeyword), 'ig'), ' ');
+  }
+  for (const word of [...stripWords].sort((a, b) => b.length - a.length)) {
+    if (!word) continue;
+    // 单字「来 / 放 / 的」只在句首、且后面有空格时才当作多余词，
+    // 否则会把《夜空中最亮的星》《来生缘》这类正常歌名改坏。
+    if (word.length === 1 && '来放的'.includes(word)) {
+      song = song.replace(new RegExp(`^\\s*${escapeRegExp(word)}\\s+`, 'g'), ' ');
+      continue;
+    }
+    song = song.replace(new RegExp(escapeRegExp(word), 'gi'), ' ');
+  }
+
+  // 广告/链接类先判定，避免下面把 "http://" 里的符号清掉后漏判
+  const preReject = config.rejectIfContains || [];
+  const preLower = song.toLowerCase();
+  for (const bad of preReject) {
+    if (bad && preLower.includes(String(bad).toLowerCase())) {
+      return { ok: false, reason: 'rejected-word', song: song.trim(), keyword: hitKeyword, raw };
+    }
+  }
+
+  // 注意：这里刻意不动「的」。像「我的未来不是梦」「夜空中最亮的星」这种歌名本身就带「的」，
+  // 正则去掉会把歌名改坏；「周杰伦的晴天」这类带歌手的写法交给B站搜索的兜底逻辑处理。
+  song = song.replace(/[\s:：,，、\-—]+/g, ' ').trim();
+
+  // 层层剥掉首尾的语气词/括号/标点：「《晴天》吧~」-> 「晴天」
+  const EDGE_PARTICLES = /(?:^[吧呗嘛呀啊哦喔哈啦嘞咯噢哟]+)|(?:[吧呗嘛呀啊哦喔哈啦嘞咯噢哟]+$)/g;
+  const LEAD_BRACKETS = /^["'“”‘’《》〈〉【】\[\]()（）]+/;
+  const TRAIL_BRACKETS = /["'“”‘’《》〈〉【】\[\]()（）]+$/;
+  const EDGE_PUNCT = /(?:^[\s:：,，、\-—~～!！?？.。;；]+)|(?:[\s:：,，、\-—~～!！?？.。;；]+$)/g;
+  for (let i = 0; i < 6; i += 1) {
+    const before = song;
+    song = song.replace(EDGE_PARTICLES, '').replace(EDGE_PUNCT, '');
+    // 开括号只在句首才脱掉，避免把歌名中间的「《」吃掉；闭括号可以放心从尾部去掉
+    if (config.stripQuotes !== false) song = song.replace(LEAD_BRACKETS, '').replace(TRAIL_BRACKETS, '');
+    if (song === before) break;
+  }
+  song = song.replace(/\s{2,}/g, ' ').trim();
+
+  // 落单的开括号：抖音弹幕经常只打半个，留着会干扰搜索
+  const OPENERS = '《〈【（(｛{「『';
+  const CLOSERS = '》〉】）)｝}」』';
+  for (let i = 0; i < OPENERS.length; i += 1) {
+    const open = OPENERS[i];
+    const close = CLOSERS[i];
+    if (song.includes(open) && !song.includes(close)) {
+      song = song.split(open).join(' ');
+    }
+  }
+  song = song.replace(/\s{2,}/g, ' ').trim();
+
+  const minLength = Number(config.minLength ?? 2);
+  const maxLength = Number(config.maxLength ?? 40);
+  if (song.length < minLength) return { ok: false, reason: 'too-short', song, keyword: hitKeyword, raw };
+  if (song.length > maxLength) return { ok: false, reason: 'too-long', song, keyword: hitKeyword, raw };
+
+  const reject = config.rejectIfContains || [];
+  const lower = song.toLowerCase();
+  for (const bad of reject) {
+    if (bad && lower.includes(String(bad).toLowerCase())) {
+      return { ok: false, reason: 'rejected-word', song, keyword: hitKeyword, raw };
+    }
+  }
+  // 纯符号/纯数字不算歌名
+  if (!/[\u4e00-\u9fa5a-zA-Z]/.test(song)) {
+    return { ok: false, reason: 'not-a-song', song, keyword: hitKeyword, raw };
+  }
+
+  return { ok: true, song, keyword: hitKeyword, raw };
+}
+
+/**
+ * 从一段文本里识别「直接指定B站视频」的写法。
+ *
+ * 为什么需要：自动搜索再准也只是「猜」。热门歌的原唱常常搜不到（版权下架），
+ * 主播/观众如果想放某个**具体**视频，最可靠的办法就是直接把链接或 BV 号发出来。
+ * 支持的形式：
+ *   https://www.bilibili.com/video/BV1xx411c7mD
+ *   BV1xx411c7mD            （裸 BV 号）
+ *   av123456 / BV 号带空格
+ *
+ * 返回 { bvid } 或 null。
+ */
+function parseDirectVideo(input) {
+  const raw = normalizeText(input);
+  if (!raw) return null;
+
+  // BV 号：BV + 10 位 base58（大小写敏感，但观众常打错大小写，统一成标准形式）
+  const bvMatch = raw.match(/\b(BV[0-9A-Za-z]{10})\b/);
+  if (bvMatch) return { bvid: bvMatch[1] };
+
+  // av 号
+  const avMatch = raw.match(/\bav(\d{1,12})\b/i);
+  if (avMatch) return { aid: Number(avMatch[1]) };
+
+  // b23.tv 短链 / bilibili 链接里带 BV
+  const urlMatch = raw.match(/https?:\/\/[^\s]*bilibili\.com\/[^\s]*/i);
+  if (urlMatch) {
+    const inner = urlMatch[0].match(/(BV[0-9A-Za-z]{10})/);
+    if (inner) return { bvid: inner[1] };
+    return { url: urlMatch[0] };
+  }
+
+  return null;
+}
+
+/** 多首歌：「点歌 晴天/七里香」 */
+function splitSongs(song) {
+  if (!song) return [];
+  return uniq(
+    song
+      .split(/[\/|、,，;；]+|\s+和\s+/)
+      .map((s) => s.trim())
+      .filter((s) => /[\u4e00-\u9fa5a-zA-Z]/.test(s))
+  );
+}
+
+function escapeRegExp(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+/**
+ * 点歌过滤器：同歌去重窗口 + 每人冷却 + 每人队列上限
+ */
+class RequestFilter {
+  constructor(config = {}, logger = null) {
+    this.config = config;
+    this.logger = logger;
+    this.songHistory = new Map(); // fingerprint -> timestamp
+    this.userLast = new Map(); // userId -> timestamp
+    this.userQueue = new Map(); // userId -> count
+  }
+
+  updateConfig(config) {
+    this.config = config;
+  }
+
+  check({ userId, nickname, song }) {
+    const now = Date.now();
+    const windowMs = Number(this.config.sameSongWindowMs ?? 900000);
+    const cooldownMs = Number(this.config.perUserCooldownMs ?? 60000);
+    const maxPerUser = Number(this.config.maxQueuePerUser ?? 3);
+
+    const fp = songFingerprint(song);
+    const last = this.songHistory.get(fp);
+    if (last && now - last < windowMs) {
+      return { ok: false, reason: 'duplicate', message: `「${song}」最近点过啦，换一首吧~` };
+    }
+
+    const lastByUser = this.userLast.get(String(userId));
+    if (cooldownMs > 0 && lastByUser && now - lastByUser < cooldownMs) {
+      const left = Math.ceil((cooldownMs - (now - lastByUser)) / 1000);
+      return { ok: false, reason: 'cooldown', message: `${nickname} 点歌太快啦，${left}秒后再来~` };
+    }
+
+    const queued = this.userQueue.get(String(userId)) || 0;
+    if (maxPerUser > 0 && queued >= maxPerUser) {
+      return { ok: false, reason: 'user-queue-full', message: `${nickname} 已经排了${queued}首，先听完吧~` };
+    }
+
+    return { ok: true, fingerprint: fp };
+  }
+
+  commit({ userId, song, fingerprint }) {
+    const now = Date.now();
+    const fp = fingerprint || songFingerprint(song);
+    this.songHistory.set(fp, now);
+    this.userLast.set(String(userId), now);
+    this.userQueue.set(String(userId), (this.userQueue.get(String(userId)) || 0) + 1);
+
+    // 顺手清理过期记录，防止内存无限增长
+    const windowMs = Number(this.config.sameSongWindowMs ?? 900000);
+    for (const [key, time] of this.songHistory) {
+      if (now - time > windowMs) this.songHistory.delete(key);
+    }
+    const cooldownMs = Number(this.config.perUserCooldownMs ?? 60000);
+    for (const [key, time] of this.userLast) {
+      if (now - time > Math.max(cooldownMs, 60000) * 5) this.userLast.delete(key);
+    }
+  }
+
+  releaseUser(userId) {
+    const key = String(userId);
+    const next = (this.userQueue.get(key) || 0) - 1;
+    if (next <= 0) this.userQueue.delete(key);
+    else this.userQueue.set(key, next);
+  }
+
+  reset() {
+    this.songHistory.clear();
+    this.userLast.clear();
+    this.userQueue.clear();
+  }
+}
+
+module.exports = {
+  normalizeText,
+  songFingerprint,
+  parseRequest,
+  parseDirectVideo,
+  splitSongs,
+  RequestFilter,
+  escapeRegExp,
+};

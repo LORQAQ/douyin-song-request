@@ -1,0 +1,25 @@
+{
+  "manifest_version": 3,
+  "name": "抖音点歌助手（B站自动播放）",
+  "version": "1.0.1",
+  "description": "把抖音直播间的弹幕转发给本机点歌服务，并在页面右下角显示当前歌曲与点歌队列。",
+  "permissions": ["storage"],
+  "host_permissions": ["http://127.0.0.1/*", "http://localhost/*", "https://live.douyin.com/*", "https://www.douyin.com/*"],
+  "content_scripts": [
+    {
+      "matches": ["https://live.douyin.com/*", "https://www.douyin.com/*"],
+      "js": ["inject.js"],
+      "run_at": "document_start",
+      "world": "MAIN",
+      "all_frames": false
+    },
+    {
+      "matches": ["https://live.douyin.com/*", "https://www.douyin.com/*"],
+      "js": ["content.js"],
+      "css": ["panel.css"],
+      "run_at": "document_idle",
+      "world": "ISOLATED",
+      "all_frames": false
+    }
+  ]
+}

@@ -1,0 +1,340 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<title>歌单悬浮窗</title>
+<style>
+  /* 背景完全透明 —— 独立悬浮窗程序 / 直播伴侣的「窗口捕获」都会保留这个透明 */
+  html, body {
+    margin: 0; padding: 0; background: transparent;
+    overflow: hidden;
+    font-family: "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    /* 独立窗口里整块都能拖动（浏览器里无效，无副作用） */
+    -webkit-app-region: drag;
+    user-select: none;
+  }
+  /* 队列列表允许选中复制歌名 */
+  #list { -webkit-app-region: no-drag; user-select: text; }
+
+  #stage {
+    position: fixed; left: 0; top: 0;
+    padding: 18px 20px;
+    transform-origin: top left;
+  }
+
+  /* ===== 当前播放 ===== */
+  .now {
+    display: flex; align-items: center; gap: 14px;
+    background: rgba(12, 16, 24, 0.78);
+    border-left: 6px solid #3fb950;
+    border-radius: 12px;
+    padding: 14px 20px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.45);
+    margin-bottom: 14px;
+    max-width: 620px;
+  }
+  .now.paused { border-left-color: #d29922; opacity: 0.85; }
+  .now.idle   { border-left-color: #6e7681; opacity: 0.75; }
+
+  #cover {
+    width: 64px; height: 64px; border-radius: 8px; object-fit: cover;
+    background: rgba(255,255,255,0.08); flex: 0 0 auto;
+  }
+  .now-text { min-width: 0; }
+  .label { font-size: 14px; color: #7ee787; letter-spacing: 1px; margin-bottom: 4px; }
+  .now.paused .label { color: #e3b341; }
+  .now.idle .label   { color: #8b949e; }
+  #song { font-size: 30px; font-weight: 700; color: #fff; white-space: nowrap;
+          overflow: hidden; text-overflow: ellipsis; max-width: 500px;
+          text-shadow: 0 2px 8px rgba(0,0,0,0.6); }
+  #by   { font-size: 16px; color: #b9c0cb; margin-top: 4px; }
+  #by b { color: #ffd479; font-weight: 600; }
+
+  /* ===== 队列 ===== */
+  .queue { background: rgba(12, 16, 24, 0.72); border-radius: 12px;
+           padding: 12px 16px; max-width: 620px;
+           box-shadow: 0 8px 28px rgba(0,0,0,0.4); }
+  .queue-title { font-size: 15px; color: #9aa4b2; letter-spacing: 1px;
+                 margin-bottom: 8px; display: flex; justify-content: space-between; }
+  #count { color: #58a6ff; font-weight: 600; }
+  ol { margin: 0; padding: 0; list-style: none; }
+  li { display: flex; align-items: baseline; gap: 10px;
+       font-size: 22px; color: #e6edf3; padding: 5px 0;
+       border-bottom: 1px solid rgba(255,255,255,0.06); }
+  li:last-child { border-bottom: none; }
+  .idx { color: #58a6ff; font-weight: 700; font-size: 18px; flex: 0 0 26px; }
+  .nm  { flex: 1 1 auto; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .who { color: #ffd479; font-size: 17px; flex: 0 0 auto; max-width: 180px;
+         white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .more { color: #8b949e; font-size: 17px; padding-top: 6px; }
+  .empty { color: #8b949e; font-size: 19px; padding: 6px 0; }
+
+  /* ===== 提示条 ===== */
+  #toast {
+    position: fixed; left: 20px; bottom: 20px;
+    background: rgba(12,16,24,0.85); color: #7ee787;
+    font-size: 18px; padding: 10px 18px; border-radius: 10px;
+    opacity: 0; transition: opacity .3s; pointer-events: none;
+  }
+  #toast.show { opacity: 1; }
+
+  /* 连接断开时整块变暗 */
+  body.offline #stage { opacity: .45; }
+</style>
+</head>
+<body>
+<div id="stage">
+  <div class="now idle" id="now">
+    <img id="cover" alt="" />
+    <div class="now-text">
+      <div class="label" id="label">等待点歌</div>
+      <div id="song">还没有人点歌</div>
+      <div id="by">弹幕发「<b>点歌 歌名</b>」就能排上</div>
+    </div>
+  </div>
+
+  <div class="queue" id="queueBox">
+    <div class="queue-title">
+      <span>📋 待播歌单</span>
+      <span id="count">0 首</span>
+    </div>
+    <ol id="list"></ol>
+    <div class="empty" id="empty">（暂时没人排队）</div>
+  </div>
+</div>
+<div id="toast"></div>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const qs = new URLSearchParams(location.search);
+
+  /* ===== 可通过 URL 参数调整（直播伴侣里改地址就行） =====
+     ?scale=1.2      整体缩放
+     &max=8          最多显示几首待播
+     &theme=light    浅色主题（默认深色，深色更适合大多数直播间背景）
+  */
+  const scale = Math.min(3, Math.max(0.4, Number(qs.get('scale')) || 1));
+  const maxShow = Math.min(20, Math.max(1, Number(qs.get('max')) || 6));
+  const theme = qs.get('theme') || 'dark';
+
+  $('stage').style.transform = 'scale(' + scale + ')';
+
+  if (theme === 'light') {
+    const st = document.createElement('style');
+    st.textContent = [
+      '.now, .queue { background: rgba(255,255,255,0.86); box-shadow: 0 8px 28px rgba(0,0,0,0.18); }',
+      '#song { color: #111; text-shadow: none; }',
+      '#by { color: #444; } #by b { color: #b45309; }',
+      'li { color: #1a1a1a; border-bottom-color: rgba(0,0,0,0.08); }',
+      '.idx { color: #1f6feb; } .who { color: #b45309; }',
+      '.queue-title, .empty, .more { color: #555; }'
+    ].join('\n');
+    document.head.appendChild(st);
+  }
+
+  /* ===== 连接服务端 ===== */
+  let ws = null;
+  let retry = 0;
+  let lastPlayId = '';
+
+  function connect() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    ws = new WebSocket(proto + '//' + location.host + '/ws/audio');
+
+    ws.onopen = () => {
+      document.body.classList.remove('offline');
+      retry = 0;
+    };
+    ws.onclose = () => {
+      document.body.classList.add('offline');
+      retry += 1;
+      setTimeout(connect, Math.min(8000, 800 * retry));
+    };
+    ws.onerror = () => { try { ws.close(); } catch (e) {} };
+    ws.onmessage = (ev) => {
+      let m;
+      try { m = JSON.parse(ev.data); } catch (e) { return; }
+      if (m.type === 'hello' || m.type === 'state') render(m.state || m);
+      else if (m.type === 'play') { toast('🎵 ' + (m.song || '') + ' 开始播放'); }
+      else if (m.type === 'toast' && m.text) { toast(m.text); }
+    };
+  }
+
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
+      { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]
+    ));
+  }
+
+  let toastTimer = null;
+  function toast(text) {
+    const el = $('toast');
+    el.textContent = text;
+    el.classList.add('show');
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => el.classList.remove('show'), 3500);
+  }
+
+  /**
+   * 把「陈奕迅等人华语金曲合集｜学习静心｜坐车通勤…· P7 最佳损友」
+   * 压成「陈奕迅等人华语金曲合集 · P7」这种一眼能看懂的短标签。
+   */
+  /**
+   * 把标题压成一个短标签，比如「陈奕迅等人华语金曲合集 · P7」。
+   *
+   * 规则（故意做得简单，够用就行）：
+   *   ① 去掉歌名（大字已经显示了）
+   *   ② 优先选带「合集类」关键词的那一段，这种名字最干净
+   *   ③ 把【】《》（） 这些括号符号**整体删掉**，只留文字
+   *      （不做「剥外壳」那套配对逻辑 —— 之前试过，遇到嵌套括号会剥出
+   *        「经典】周杰伦全MV 【200P」这种半个括号，很难看）
+   *   ④ 太长就按「段」丢弃，不硬截字符
+   *   ⑤ 最后带上分P号（观众能看到是合集里第几首）
+   */
+  function shortSource(rawTitle, songName) {
+    if (!rawTitle) return '';
+    let t = String(rawTitle);
+
+    // ① 去歌名
+    if (songName) t = t.split(songName).join(' ');
+
+    // ② 分P 信息
+    const p = t.match(/[·\s]*P(\d+)/);
+    const pageTag = p ? ' · P' + p[1] : '';
+
+    // ③ 按分隔符切段，优先挑「合集类」的那段
+    const KEY = /(合集|全集|精选|歌单|无损|金曲|专辑|单曲|MV)/i;
+    const segs = t
+      .split(/[｜|·/、,，]/)
+      .map((s) => s.replace(/[【】《》（）()\[\]「」]/g, '').trim())
+      .filter((s) => s.length >= 2);
+    let head = segs.find((s) => KEY.test(s)) || segs[0] || '';
+
+    // ④ 太长 → 按段丢弃（不硬截字符，避免半个括号）
+    const LIMIT = 16;
+    if (head.length > LIMIT) {
+      const chunks = head.split(/(?=[【《（(\[「])/).filter(Boolean);
+      let out = '';
+      for (const c of chunks) {
+        if ((out + c).length > LIMIT) break;
+        out += c;
+      }
+      head = (out || head.slice(0, LIMIT)).replace(/[\s·]+$/, '') + '…';
+    }
+
+    return head ? head + pageTag : pageTag.replace(/^ · /, '');
+  }
+
+  function render(state) {
+    if (!state) return;
+    const cur = state.current;
+    const queue = state.queue || [];
+    const now = $('now');
+
+    /* --- 当前播放 --- */
+    if (cur && cur.song) {
+      const playing = cur.status === 'playing';
+      now.className = 'now' + (playing ? '' : ' paused');
+      $('label').textContent = playing ? '正在播放' : (cur.status === 'searching' ? '正在找歌…' : '准备中');
+      $('song').textContent = cur.song;
+      // 副标题只留「点歌人 + 简洁来源」，不要把整个合集名铺出来
+      // （实测原来的写法会把「陈奕迅等人华语金曲合集｜学习静心｜坐车通勤…」整段显示，换行很难看）
+      const who = cur.nickname ? '点歌：<b>' + esc(cur.nickname) + '</b>' : '';
+      const rawTitle = (cur.pick && cur.pick.title) || '';
+      const src = shortSource(rawTitle, cur.song);
+      const tail = src ? '　·　' + esc(src) : '';
+      $('by').innerHTML = who + tail;
+      const pic = cur.pick && cur.pick.pic;
+      if (pic) {
+        // B站图片有防盗链，必须走本机代理（`/api/img?u=...`，参数名是 u），
+        // 否则在浏览器里会裂图（实测过）。
+        $('cover').src = '/api/img?u=' + encodeURIComponent(pic);
+        $('cover').style.display = '';
+        $('cover').onerror = () => { $('cover').style.display = 'none'; };
+      } else {
+        $('cover').removeAttribute('src');
+        $('cover').style.display = 'none';
+      }
+      if (cur.id && cur.id !== lastPlayId) lastPlayId = cur.id;
+    } else {
+      now.className = 'now idle';
+      $('label').textContent = '等待点歌';
+      $('song').textContent = '还没有人点歌';
+      $('by').innerHTML = '弹幕发「<b>点歌 歌名</b>」就能排上';
+      $('cover').style.display = 'none';
+    }
+
+    /* --- 队列 --- */
+    const waiting = queue.filter((x) => x.status !== 'playing');
+    $('count').textContent = waiting.length + ' 首';
+    $('empty').style.display = waiting.length ? 'none' : '';
+    $('list').innerHTML = waiting.slice(0, maxShow).map((x, i) => (
+      '<li>' +
+        '<span class="idx">' + (i + 1) + '</span>' +
+        '<span class="nm">' + esc(x.song) + '</span>' +
+        (x.nickname ? '<span class="who">' + esc(x.nickname) + '</span>' : '') +
+      '</li>'
+    )).join('');
+    const rest = waiting.length - maxShow;
+    let more = document.getElementById('more');
+    if (rest > 0) {
+      if (!more) { more = document.createElement('div'); more.id = 'more'; more.className = 'more'; $('queueBox').appendChild(more); }
+      more.textContent = '… 还有 ' + rest + ' 首';
+    } else if (more) { more.remove(); }
+  }
+
+  connect();
+
+  /* ===== 独立窗口（Electron）专属的小功能 =====
+   * 在浏览器里打开时 window.overlayApp 是 undefined，下面全部自动跳过，
+   * 所以同一个页面既能当网页用，也能当独立程序用。
+   */
+  const ne = window.overlayApp;
+  if (ne && ne.isElectron) {
+    document.body.classList.add('in-app');
+
+    // 顶部给一条提示：鼠标穿透开着的时候，用快捷键或右键都能操作窗口
+    const tip = document.createElement('div');
+    tip.id = 'app-tip';
+    tip.textContent = 'Ctrl+Alt+T 切换鼠标穿透　·　Ctrl+Alt+M 让它能被鼠标点到';
+    document.body.appendChild(tip);
+    setTimeout(() => { tip.style.opacity = '0'; }, 6000);
+
+    let through = true; // 主进程默认开着穿透
+
+    async function setThrough(on) {
+      through = await ne.setClickThrough(on);
+      tip.textContent = through
+        ? '鼠标穿透：开（点不到这个窗口）　Ctrl+Alt+T 关闭'
+        : '鼠标穿透：关（可以拖动/选中）　Ctrl+Alt+T 打开';
+      tip.style.opacity = '1';
+      clearTimeout(tipTimer);
+      tipTimer = setTimeout(() => { tip.style.opacity = '0'; }, 4000);
+    }
+    let tipTimer = null;
+
+    window.addEventListener('keydown', (e) => {
+      // Ctrl+Alt+T 切换穿透；Ctrl+Alt+M 强制关掉穿透（方便拖动窗口）
+      if (e.ctrlKey && e.altKey && (e.key === 't' || e.key === 'T')) {
+        e.preventDefault();
+        setThrough(!through);
+      }
+      if (e.ctrlKey && e.altKey && (e.key === 'm' || e.key === 'M')) {
+        e.preventDefault();
+        if (through) setThrough(false);
+      }
+    });
+
+    // 右键菜单（穿透关闭时才能点到）
+    window.addEventListener('contextmenu', (e) => {
+      e.preventDefault();
+      setThrough(!through);
+    });
+  }
+})();
+</script>
+</body>
+</html>

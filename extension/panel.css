@@ -1,0 +1,43 @@
+/* 抖音直播间页面上的悬浮小窗：显示当前播放 + 队列 + 连接状态 */
+#dsr-panel {
+  position: fixed;
+  right: 14px;
+  bottom: 96px;
+  width: 260px;
+  z-index: 2147483000;
+  background: rgba(13, 17, 23, 0.93);
+  color: #e6edf3;
+  border: 1px solid #2b3444;
+  border-radius: 12px;
+  padding: 10px 12px;
+  box-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+  font: 13px/1.6 "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+  backdrop-filter: blur(6px);
+}
+#dsr-panel * { box-sizing: border-box; }
+#dsr-panel .dsr-head {
+  display: flex; align-items: center; gap: 7px; margin-bottom: 7px;
+  font-size: 12px; color: #8b98a9; cursor: move;
+}
+#dsr-panel .dsr-dot { width: 8px; height: 8px; border-radius: 50%; background: #f85149; flex: none; }
+#dsr-panel .dsr-dot.on { background: #3fb950; box-shadow: 0 0 8px #3fb950; }
+#dsr-panel .dsr-title { font-weight: 700; font-size: 14px; margin-bottom: 2px; word-break: break-all; }
+#dsr-panel .dsr-sub { color: #8b98a9; font-size: 12px; word-break: break-all; }
+#dsr-panel .dsr-who { color: #ff5c7a; font-weight: 600; }
+#dsr-panel .dsr-next { margin-top: 7px; padding-top: 7px; border-top: 1px solid #1f2733; font-size: 12px; color: #9fb0c4; }
+#dsr-panel .dsr-row { display: flex; gap: 6px; margin-top: 9px; }
+#dsr-panel button {
+  flex: 1; font: inherit; font-size: 12px; color: #e6edf3; cursor: pointer;
+  background: #1c2330; border: 1px solid #2b3444; border-radius: 8px; padding: 5px 8px;
+}
+#dsr-panel button:hover { background: #26313f; }
+#dsr-panel .dsr-min { width: 22px; flex: none; padding: 5px 0; text-align: center; }
+#dsr-panel.dsr-collapsed .dsr-body { display: none; }
+#dsr-panel.dsr-collapsed { width: auto; }
+#dsr-toast {
+  position: fixed; right: 14px; bottom: 380px; z-index: 2147483000;
+  background: rgba(13, 17, 23, 0.95); border: 1px solid #2b3444; border-left: 3px solid #00aeec;
+  color: #e6edf3; border-radius: 10px; padding: 9px 12px; max-width: 280px;
+  font: 13px/1.6 "Microsoft YaHei UI", system-ui, sans-serif; opacity: 0; transition: opacity .2s;
+}
+#dsr-toast.show { opacity: 1; }

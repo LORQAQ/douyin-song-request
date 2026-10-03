@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<title>音乐播放页 · 点歌</title>
+<style>
+  :root { --bg:#0b0f14; --panel:#141b24; --line:#26313f; --text:#e8eef6; --muted:#8794a6; --bili:#00aeec; --ok:#3fb950; --err:#f85149; }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; background: var(--bg); color: var(--text); overflow: hidden;
+    font: 14px/1.6 "Microsoft YaHei UI", "PingFang SC", system-ui, sans-serif;
+    user-select: none;
+  }
+  .bar {
+    display: flex; align-items: center; gap: 10px; padding: 8px 12px;
+    background: linear-gradient(90deg, #16202c, #101720); border-bottom: 1px solid var(--line);
+    -webkit-app-region: drag; height: 44px;
+  }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: var(--err); flex: none; }
+  .dot.on { background: var(--ok); box-shadow: 0 0 8px var(--ok); }
+  .dot.busy { background: #d29922; animation: p 1s infinite; }
+  @keyframes p { 50% { opacity: .3; } }
+  .bar .label { font-size: 12.5px; color: var(--muted); flex: none; }
+  .bar .spacer { flex: 1; }
+  .bar button {
+    font: inherit; font-size: 12.5px; color: var(--text); background: #1d2735; cursor: pointer;
+    border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; -webkit-app-region: no-drag;
+  }
+  .bar button:hover { background: #26333f; }
+  .main { padding: 14px; display: flex; gap: 14px; align-items: center; min-height: 150px; }
+  .cover { width: 112px; height: 70px; object-fit: cover; border-radius: 8px; background: #0e141b; border: 1px solid var(--line); flex: none; }
+  .info { min-width: 0; flex: 1; }
+  .title { font-size: 17px; font-weight: 700; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .sub { color: var(--muted); font-size: 12.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .who { color: #ff5c7a; font-weight: 600; }
+  .mode { font-size: 11.5px; color: #6c7a8c; }
+  .progress { height: 5px; background: #1b2430; border-radius: 4px; overflow: hidden; margin-top: 8px; }
+  .progress i { display: block; height: 100%; width: 0; background: linear-gradient(90deg, var(--bili), #6ad0ff); transition: width .4s linear; }
+  .timer { display: flex; justify-content: space-between; font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  .next { padding: 0 14px 12px; font-size: 12.5px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .toast {
+    position: fixed; left: 12px; bottom: 12px; right: 12px;
+    background: #1a2431ee; border: 1px solid var(--line); border-left: 3px solid var(--bili);
+    border-radius: 9px; padding: 10px 12px; box-shadow: 0 10px 30px rgba(0,0,0,.5);
+    transform: translateY(140%); transition: transform .25s ease-out; font-size: 13.5px;
+  }
+  .toast.show { transform: translateY(0); }
+  .toast .t { font-weight: 700; }
+  .click-hint {
+    position: fixed; inset: 0; background: #0b0f14ee; display: none;
+    align-items: center; justify-content: center; flex-direction: column; gap: 10px; cursor: pointer; z-index: 10;
+  }
+  .click-hint b { font-size: 16px; }
+  .click-hint span { color: var(--muted); font-size: 12.5px; }
+  iframe { position: fixed; width: 2px; height: 2px; opacity: 0.01; left: -10px; bottom: -10px; border: 0; }
+  .idle { color: var(--muted); }
+</style>
+</head>
+<body>
+  <div class="bar">
+    <i class="dot" id="dot"></i>
+    <span class="label" id="conn">连接中…</span>
+    <span class="spacer"></span>
+    <button id="btn-sink" title="选择这个页面把声音输出到哪个声卡">🔈 输出设备</button>
+    <span class="label" id="vol-label">80%</span>
+    <button id="btn-skip">⏭ 下一首</button>
+    <button id="btn-mute">🔊 静音</button>
+  </div>
+
+  <div class="main">
+    <img class="cover" id="cover" alt="" />
+    <div class="info">
+      <div class="title" id="title">等待点歌…</div>
+      <div class="sub" id="sub">弹幕发「点歌 歌名」就会自动播放</div>
+      <div class="progress"><i id="bar"></i></div>
+      <div class="timer"><span id="cur">0:00</span><span id="dur">0:00</span></div>
+      <div class="mode" id="mode"></div>
+      <div class="mode" id="norm"></div>
+      <div class="mode" id="sink"></div>
+    </div>
+  </div>
+  <div class="next" id="next"></div>
+
+  <div class="toast" id="toast"><div class="t" id="toast-t"></div><div id="toast-s"></div></div>
+  <div class="click-hint" id="hint">
+    <b>点一下这里开始播放</b>
+    <span>Chrome 首次需要一次点击才允许自动播放声音（点完以后就不用再点了）</span>
+    <div id="hint-err" style="display:none;margin-top:10px;padding:8px 12px;background:rgba(255,80,80,0.15);border:1px solid rgba(255,80,80,0.5);border-radius:8px;color:#ff9d9d;font-size:13px;max-width:560px;line-height:1.5"></div>
+  </div>
+
+  <audio id="audio" preload="auto"></audio>
+  <div id="embed-host"></div>
+
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const audio = $('audio');
+  let ws = null;
+  let current = null;
+  let volume = 0.8;
+  let muted = false;
+  let needGesture = false;
+  let progressTimer = null;
+  let triedBackups = 0;
+
+  function wsUrl() {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    return proto + '//' + location.host + '/ws/audio';
+  }
+
+  function connect() {
+    ws = new WebSocket(wsUrl());
+    ws.onopen = () => setDot('on', '已连接');
+    ws.onclose = () => {
+      setDot('', '连接断开，重连中…');
+      setTimeout(connect, 2000);
+    };
+    ws.onmessage = (ev) => {
+      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
+      handle(msg);
+    };
+  }
+
+  function send(o) { if (ws && ws.readyState === 1) ws.send(JSON.stringify(o)); }
+
+  function setDot(cls, text) {
+    $('dot').className = 'dot ' + cls;
+    $('conn').textContent = text;
+  }
+
+  function handle(msg) {
+    if (msg.type === 'hello' || msg.type === 'state') {
+      if (msg.state) {
+        renderQueue(msg.state);
+        // 页面刚打开时，把正在播放的歌接上（否则它会静止不动）
+        if (msg.state.current && (!current || current.id !== msg.state.current.id) && !audio.src && !$('embed-host').innerHTML) {
+          playEntry(stateToPayload(msg.state.current));
+        }
+      }
+      return;
+    }
+    if (msg.type === 'command') {
+      if (msg.cmd === 'pause') { audio.pause(); pauseEmbed(); }
+      if (msg.cmd === 'resume') { audio.play().catch(() => {}); }
+      if (msg.cmd === 'stop') stopAll();
+      return;
+    }
+    if (msg.type === 'play') { playEntry(msg); return; }
+    if (msg.type === 'toast') { showToast(msg.toast); return; }
+    if (msg.type === 'volume') { setVolume(msg.value); return; }
+    if (msg.type === 'mute') { applyMute(msg.value); return; }
+  }
+
+  function applyMute(value) {
+    muted = Boolean(value);
+    audio.muted = muted;
+    $('btn-mute').textContent = muted ? '🔇 取消静音' : '🔊 静音';
+  }
+
+  function renderQueue(state) {
+    const next = (state.queue || []).filter((q) => q.status === 'queued');
+    $('next').textContent = next.length
+      ? '下一首：' + next.slice(0, 3).map((q) => q.song + '（' + q.nickname + '）').join(' → ') + (next.length > 3 ? ' …共' + next.length + '首' : '')
+      : '队列空空的，欢迎点歌~';
+  }
+
+  function showToast(t) {
+    if (!t) return;
+    $('toast-t').textContent = t.text || '';
+    $('toast-s').textContent = t.sub || '';
+    $('toast').classList.add('show');
+    clearTimeout(showToast._timer);
+    showToast._timer = setTimeout(() => $('toast').classList.remove('show'), 8000);
+  }
+
+  function setVolume(v) {
+    volume = Math.min(1, Math.max(0, Number(v) || 0));
+    audio.volume = volume;
+    $('vol-label').textContent = Math.round(volume * 100) + '%';
+  }
+
+  function stopAll() {
+    current = null;
+    try { audio.pause(); } catch {}
+    audio.removeAttribute('src');
+    audio.load();
+    $('embed-host').innerHTML = '';
+    $('title').textContent = '等待点歌…';
+    $('sub').textContent = '弹幕发「点歌 歌名」就会自动播放';
+    $('bar').style.width = '0%';
+    $('cur').textContent = '0:00';
+    $('dur').textContent = '0:00';
+    $('cover').removeAttribute('src');
+    if (progressTimer) clearInterval(progressTimer);
+  }
+
+  function pauseEmbed() {
+    const iframe = $('embed-host').querySelector('iframe');
+    if (iframe) iframe.contentWindow.postMessage(JSON.stringify({ command: 'pause' }), '*');
+  }
+
+  function playEntry(entry) {
+    if (!entry) return;
+    const p = entry.pick ? stateToPayload(entry) : entry;
+    if (p.mode !== 'direct' && !p.audioUrl && p.pick) p.mode = 'embed';
+    current = p;
+    triedBackups = 0;
+
+    $('title').textContent = p.title || p.song || '未知歌曲';
+    // 小字：点歌人 · 来源（压缩过的合集名+分P）· UP主 · 时长 · 模式
+    // 来源优先用服务端算好的 p.source（避免这里再写一套压缩逻辑，两边不一致）
+    const src = p.source || '';
+    $('sub').innerHTML = '<span class="who">' + esc(p.nickname || '观众') + '</span> 点的' +
+      (src ? ' · ' + esc(src) : '') +
+      (p.author ? ' · ' + esc(p.author) : '') +
+      ' · ' + (p.durationText || '') + (p.mode === 'embed' ? ' · 内嵌播放模式' : ' · 纯音频');
+    // 音量校准结果给主播一个可见的反馈
+    $('norm').textContent = p.gainDb
+      ? `音量已校准 ${p.gainDb > 0 ? '+' : ''}${Number(p.gainDb).toFixed(1)}dB（测得 ${Number(p.lufs).toFixed(1)} LUFS）`
+      : '';
+    $('cover').src = p.pic ? '/api/img?u=' + encodeURIComponent(p.pic) : '';
+    $('dur').textContent = p.durationText || formatDur(p.duration || 0);
+    $('mode').textContent = p.mode === 'embed' ? '（音频来自B站官方内嵌播放器）' : (p.audioUrl ? '（直链音频，无画面）' : '');
+    setVolume(p.volume != null ? p.volume : volume);
+
+    // 有音频地址一律走 <audio>（这样才能选输出设备）；
+    // 只有真拿不到地址时才退回官方内嵌播放器（iframe，输出设备无法单独指定）。
+    if (p.audioUrl) {
+      p.mode = 'direct';
+      playDirect(p);
+    } else {
+      p.mode = 'embed';
+      playEmbed(p);
+    }
+  }
+
+  function stateToPayload(cur) {
+    const pick = cur.pick || {};
+    const mediaUrl = pick.mediaUrl || '';
+    return {
+      id: cur.id, song: cur.song, nickname: cur.nickname,
+      bvid: pick.bvid,
+      // 大字显示「歌名」：直接用观众点的那首歌（cur.song 最准），
+      // 不要用 pick.cleanTitle —— 合集视频的 cleanTitle 是整条长标题，
+      // 显示出来会占满一整行（实测踩过）。
+      title: cur.song || pick.song || pick.cleanTitle || pick.title,
+      source: pick.source || '',
+      author: pick.author || pick.owner, duration: pick.duration, durationText: formatDur(pick.duration || 0),
+      pic: pick.pic, embedUrl: pick.embedUrl, volume: volume,
+      // 有直链就走直链：只有 <audio> 才能被 setSinkId 控制，
+      // 内嵌播放器是 iframe，输出设备没法单独指定（这个坑踩过）。
+      mode: mediaUrl ? 'direct' : 'embed',
+      audioUrl: mediaUrl,
+      proxied: Boolean(mediaUrl),
+    };
+  }
+
+  async function playDirect(p) {
+    audio.src = p.audioUrl;
+    audio.volume = volume;
+    // 放之前先把记住的输出设备应用上，避免头几秒漏到耳机（直播伴侣读不到）
+    await applyRememberedSink();
+    audio.play().then(() => {
+      setDot('on', '播放中');
+      $('hint').style.display = 'none';
+    }).catch((err) => {
+      // 浏览器拦了自动播放：提示点一下
+      setDot('busy', '等待点击');
+      needGesture = true;
+      $('hint').style.display = 'flex';
+    });
+    startProgress();
+  }
+
+  function playEmbed(p) {
+    try { audio.pause(); } catch {}
+    audio.removeAttribute('src');
+    // 官方内嵌播放器放在屏幕外，只取声音
+    $('embed-host').innerHTML = '';
+    const iframe = document.createElement('iframe');
+    iframe.allow = 'autoplay';
+    iframe.src = p.embedUrl || ('https://player.bilibili.com/player.html?bvid=' + p.bvid + '&autoplay=1&danmaku=0');
+    $('embed-host').appendChild(iframe);
+    startProgress();
+    setDot('busy', '内嵌播放中');
+  }
+
+  /* 「点一下开始播放」的处理。
+   *
+   * 原来这里有两个 bug，导致「点了没反应」：
+   *   ① `if (current && current.audioUrl)` —— audioUrl 为空时 play() 压根不调用，
+   *      但提示已经先藏了，用户看到的就是「点了没反应」。
+   *   ② `.catch(() => {})` —— 播放失败被静默吞掉，什么都不显示，无法排查。
+   *
+   * 现在：无论 current 是什么状态，都尽力播放；失败就在界面上说明原因。
+   */
+  $('hint').onclick = async () => {
+    const errBox = $('hint-err');
+
+    // 兜底：current 没有直链时，退回到「用当前 src 播」或提示重新点歌
+    const url = (current && current.audioUrl) || audio.getAttribute('src');
+    if (!url) {
+      if (errBox) {
+        errBox.textContent = '这首歌没有可播放的音频地址，请重新点一首歌（或点右上角「跳过」）。';
+        errBox.style.display = 'block';
+      }
+      return; // 不藏提示，让用户看到原因
+    }
+
+    // src 丢了就补上（刷新页面后可能丢）
+    if (!audio.getAttribute('src')) {
+      audio.src = url;
+      audio.volume = volume;
+    }
+
+    // 先确保输出设备正确（setSinkId 会触发重新加载，必须在 play 之前）
+    try { await applyRememberedSink(); } catch (e) {}
+
+    const tryPlay = async () => {
+      try {
+        await audio.play();
+        return null;
+      } catch (e) {
+        return e;
+      }
+    };
+
+    let err = await tryPlay();
+
+    // 还在加载/卡住 → 强制重新加载再试（常见于 src 设了但没触发 load）
+    if (err && (audio.readyState === 0 || audio.networkState === 2)) {
+      audio.load();
+      await new Promise((r) => setTimeout(r, 250));
+      err = (await tryPlay()) || err;
+    }
+
+    if (err) {
+      // 如实报错，不再静默吞掉
+      setDot('off', '播放失败');
+      if (errBox) {
+        const name = err.name || '错误';
+        let tip = err.message || String(err);
+        if (name === 'NotAllowedError') tip = '浏览器仍然拦截了自动播放。请在页面上任意位置再点一次，或点一下播放器控件。';
+        else if (name === 'NotSupportedError') tip = '这个音频格式浏览器不支持（可能是B站换格式了），请点「跳过」换一首。';
+        else if (name === 'AbortError') tip = '加载被中断了，再点一次通常就好。';
+        errBox.textContent = '⚠️ ' + name + '：' + tip;
+        errBox.style.display = 'block';
+      }
+      console.error('播放失败', err);
+      return; // 保留提示层，用户可以再点
+    }
+
+    // 成功
+    if (errBox) errBox.style.display = 'none';
+    $('hint').style.display = 'none';
+    needGesture = false;
+    setDot('on', '播放中');
+    startProgress();
+  };
+
+  function startProgress() {
+    if (progressTimer) clearInterval(progressTimer);
+    progressTimer = setInterval(() => {
+      const dur = (current && current.duration) || audio.duration || 0;
+      const cur = audio.currentTime || 0;
+      $('cur').textContent = formatDur(cur);
+      if (dur) $('bar').style.width = Math.min(100, (cur / dur) * 100) + '%';
+    }, 500);
+  }
+
+  function finish(reason) {
+    const id = current && current.id;
+    stopAll();
+    send({ type: 'ended', id, reason });
+    setDot('on', '等待下一首');
+  }
+
+  audio.onended = () => finish('ended');
+  audio.onerror = async () => {
+    if (!current) return;
+    // 直链可能 403（B站地址有时效）：先试备用地址，再退到内嵌播放器
+    const backups = current.audioBackups || [];
+    if (backups.length && triedBackups < backups.length) {
+      const next = backups[triedBackups];
+      triedBackups += 1;
+      audio.src = next;
+      audio.play().catch(() => {});
+      return;
+    }
+    // 代理会话过期（程序重启过 / 地址超时）：让服务端重新发一份播放地址
+    if (current.proxied || (current.audioUrl || '').startsWith('/media/')) {
+      if (triedBackups === 0) {
+        triedBackups = 1;
+        showToast({ text: '音频地址已过期，正在重新获取…' });
+        send({ type: 'reloadMedia', id: current.id });
+        return;
+      }
+    }
+    if (current.bvid && current.mode === 'direct') {
+      showToast({ text: '直链音频失效，已自动改用官方内嵌播放器', sub: '如果经常这样，可在控制台把「播放方式」切回内嵌' });
+      playEmbed(current);
+      return;
+    }
+    send({ type: 'playError', id: current.id, message: 'audio element error' });
+  };
+
+  /* =====================================================================
+   * 【自愈看门狗】—— 解决「每次过期都要手动点界面」的直播事故
+   *
+   * 实测过的问题：B站音频直链约 2 小时过期，代理会返回 502。
+   * 这时 Chrome 的表现是 **networkState=3（没有可用源）、error=null**，
+   * 也就是说 `audio.onerror` **根本不会被调用** ——
+   * 页面就静止在那里，必须主播手动点一下才继续，直播就断了。
+   *
+   * 这个看门狗每 4 秒体检一次，只要发现「该播却没播」就自动救：
+   *   ① 请求服务端重发一份新的播放地址（会自动重新解析B站直链）
+   *   ② 还不行就重新加载页面（等于是全自动的「刷新一下」）
+   *   ③ 连续失败多次才放弃，并在界面上说明
+   * ===================================================================== */
+  const NET_NO_SOURCE = 3;
+  /** 自愈失败次数存 sessionStorage：这样整页重载后还能记住，
+   *  避免"重载 → 归零 → 又重载"的无限刷新循环 */
+  const WATCHDOG_KEY = 'dsh.watchdogFails';
+  let watchdogFails = 0;
+  try {
+    watchdogFails = Number(sessionStorage.getItem(WATCHDOG_KEY)) || 0;
+  } catch (e) {
+    watchdogFails = 0;
+  }
+  let lastRecoverAt = 0;
+
+  function isBroken() {
+    // 没有可用源：直链过期/代理 502 的典型表现
+    if (audio.networkState === NET_NO_SOURCE) return true;
+    // 该播却是暂停状态（不是我们主动暂停的）
+    if (audio.paused && audio.currentTime === 0 && audio.readyState === 0) return true;
+    return false;
+  }
+
+  async function recover(reason) {
+    const now = Date.now();
+    // 防抖：10 秒内只救一次，避免疯狂重试
+    if (now - lastRecoverAt < 10000) return;
+    lastRecoverAt = now;
+    watchdogFails += 1;
+
+    const id = current && current.id;
+
+    if (watchdogFails === 1 &&
+        current && (current.proxied || (current.audioUrl || '').startsWith('/media/'))) {
+      // 第一步：让服务端重新解析一条新直链
+      showToast({ text: '音频中断，正在自动恢复…', sub: reason || '' });
+      send({ type: 'reloadMedia', id });
+      return;
+    }
+
+    if (watchdogFails === 2) {
+      // 第二步：整页重载（等于全自动「刷新一下」），重连后服务端会把当前歌重新推过来。
+      // 计数存在 sessionStorage 里 —— 原来只存内存，reload 后归零，
+      // 于是"持续故障"会变成每 10 秒刷新一次的无限循环，主播只看到页面一直闪。
+      try { sessionStorage.setItem(WATCHDOG_KEY, String(watchdogFails)); } catch (e) {}
+      showToast({ text: '自动恢复中，正在重连…', sub: '不用管，几秒就好' });
+      setTimeout(() => {
+        try { location.reload(); } catch (e) {}
+      }, 1200);
+      return;
+    }
+
+    // 第三步及以后：连续失败，如实告诉主播（但依然继续尝试，不再刷新页面）
+    showToast({
+      text: '音频自动恢复失败，仍在重试…',
+      sub: '如果一直不好，请在控制台点「跳过」换一首',
+    });
+  }
+
+  setInterval(() => {
+    // 连接断了 / 没有当前歌 / 内嵌模式 → 不插手
+    if (!current) return;
+    if (current.mode !== 'direct') return;
+    // 等待用户首次点击是正常的，不算故障
+    if (needGesture && $('hint').style.display !== 'none') return;
+
+    if (isBroken()) {
+      recover('networkState=' + audio.networkState + ' readyState=' + audio.readyState);
+      return;
+    }
+
+    // 播放正常 → 清零失败计数（sessionStorage 也一起清，否则下次故障直接跳到重载）
+    if (!audio.paused && watchdogFails !== 0) {
+      watchdogFails = 0;
+      try { sessionStorage.removeItem(WATCHDOG_KEY); } catch (e) {}
+    }
+  }, 4000);
+
+  audio.onplaying = () => { setDot('on', '播放中'); };
+  audio.onpause = () => { if (!audio.ended && current) setDot('busy', '已暂停'); };
+
+  $('btn-skip').onclick = () => send({ type: 'skip' });
+  $('btn-mute').onclick = () => {
+    applyMute(!muted);
+  };
+
+  // 播放页自己的快捷键（这个窗口在直播时是主操作区）
+  document.addEventListener('keydown', (e) => {
+    if (e.ctrlKey && e.key === 'ArrowRight') {
+      e.preventDefault();
+      send({ type: 'skip' });
+      return;
+    }
+    if (e.ctrlKey && (e.key === 'm' || e.key === 'M')) {
+      e.preventDefault();
+      applyMute(!muted);
+      return;
+    }
+    if (e.key === ' ') {
+      e.preventDefault();
+      if (audio.paused) audio.play().catch(() => {});
+      else audio.pause();
+    }
+  });
+
+  function formatDur(sec) {
+    const s = Math.max(0, Math.floor(sec || 0));
+    return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0');
+  }
+  function esc(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  /* ------------------------------ 输出设备 ------------------------------ */
+
+  // 浏览器原生支持把某个 <audio> 的输出去指定到具体声卡（setSinkId）。
+  // 这正好解决「把音乐送进虚拟声卡」的问题：不用改系统默认设备，
+  // 也不用去音量合成器里翻，直接在这个页面选一次就行（Chrome 会记住这个站点）。
+  let sinks = [];
+  let currentSinkId = '';
+  /** 主播手动选过输出设备后就不再自动刷新，免得把他选好的又覆盖掉 */
+  let sinkPinned = false;
+  /** 是否已经拿到设备名权限（Chrome 必须授权后才给设备名） */
+  let sinkLabelsUnlocked = false;
+
+  /**
+   * 【关键修复】记住选好的输出设备。
+   *
+   * 实测发现：Chrome **不会**记住 setSinkId 的选择——
+   * 刷新页面、换一首新歌、重开浏览器，全部退回系统默认设备（耳机）。
+   * 结果就是：主播切好虚拟声卡后，每放一首新歌又跑回耳机，
+   * 直播伴侣读不到声音，等主播发现再点一次，歌已经播了一大段。
+   *
+   * 所以这里把选中的设备 id 存进 localStorage，并在
+   * ① 页面打开时 ② 每次放歌前 自动重新应用。
+   */
+  const SINK_STORE_KEY = 'dsh.sinkId';
+  const SINK_LABEL_KEY = 'dsh.sinkLabel';
+
+  function rememberSink(deviceId, label) {
+    try {
+      if (deviceId) {
+        localStorage.setItem(SINK_STORE_KEY, deviceId);
+        localStorage.setItem(SINK_LABEL_KEY, label || '');
+      }
+    } catch {
+      /* 隐私模式下写不了，忽略 */
+    }
+  }
+
+  function rememberedSink() {
+    try {
+      return { id: localStorage.getItem(SINK_STORE_KEY) || '', label: localStorage.getItem(SINK_LABEL_KEY) || '' };
+    } catch {
+      return { id: '', label: '' };
+    }
+  }
+
+  /**
+   * 把之前记住的输出设备重新应用到 <audio> 上。
+   * 播放前调用，保证新歌一开始就送到虚拟声卡，而不是先漏一段到耳机。
+   */
+  async function applyRememberedSink() {
+    if (!outputSupported()) return false;
+    const saved = rememberedSink();
+    if (!saved.id) return false;
+    if (audio.sinkId === saved.id) return true;
+    try {
+      await audio.setSinkId(saved.id);
+      sinkPinned = true;
+      return true;
+    } catch (err) {
+      // 设备被拔了 / 换了名字，清掉记录，别一直报错
+      try {
+        localStorage.removeItem(SINK_STORE_KEY);
+        localStorage.removeItem(SINK_LABEL_KEY);
+      } catch {
+        /* ignore */
+      }
+      return false;
+    }
+  }
+
+  function outputSupported() {
+    return typeof HTMLMediaElement !== 'undefined' && 'setSinkId' in HTMLMediaElement.prototype;
+  }
+
+  /**
+   * Chrome 的隐私策略：不给媒体权限时，enumerateDevices() 只返回一个「无标签的默认设备」，
+   * 拿不到 VB-Cable 的名字也就没法切过去。
+   * 这里在有用户点击（= 有手势）的前提下申请一次麦克风权限来解锁列表，
+   * 拿到后立刻把轨道停掉，不会真的录音，也不会占用麦克风。
+   */
+  async function unlockSinkLabels() {
+    if (sinkLabelsUnlocked) return true;
+    if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) return false;
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      stream.getTracks().forEach((t) => t.stop());
+      sinkLabelsUnlocked = true;
+      return true;
+    } catch (err) {
+      return false;
+    }
+  }
+
+  async function refreshSinks() {
+    const el = $('sink');
+    if (!el) return;
+    if (!outputSupported()) {
+      el.textContent = '（这个浏览器不支持选输出设备，请在 Windows 音量合成器里改）';
+      $('btn-sink').disabled = true;
+      return;
+    }
+    try {
+      const devices = await navigator.mediaDevices.enumerateDevices();
+      sinks = devices.filter((d) => d.kind === 'audiooutput');
+      const named = sinks.filter((d) => d.label);
+      currentSinkId = audio.sinkId || 'default';
+      const current =
+        sinks.find((d) => d.deviceId === currentSinkId && d.label) ||
+        (currentSinkId === 'default' ? sinks.find((d) => d.deviceId === 'default' && d.label) : null);
+      const label = (current && current.label) || '系统默认';
+      const isCable = /VB-Audio|CABLE|VoiceMeeter/i.test(label);
+
+      if (!named.length) {
+        // 还没授权，只能看到无标签设备 —— 提示主播点一下按钮
+        el.innerHTML =
+          '输出设备：<b style="color:#ffd479">未授权读取设备名</b>' +
+          '　点右上角「🔈 输出设备」授权一次即可（会弹一次麦克风权限，选允许）';
+      } else {
+        el.innerHTML =
+          '输出设备：<b style="color:' + (isCable ? '#3fb950' : '#ffd479') + '">' +
+          escapeHtml(label) + '</b>' +
+          (isCable ? '　✅ 直播伴侣可以读到音乐了' : '　⚠️ 还没指向虚拟声卡（点右上角「🔈 输出设备」）');
+      }
+      // 窗口标题也标出来，方便在任务栏/音量合成器里认出这个窗口
+      document.title = (isCable ? '🔊 ' : '🔈 ') + '音乐播放页 · ' + label;
+      if (isCable) sinkPinned = true;
+    } catch (err) {
+      el.textContent = '输出设备：读取失败（' + err.message + '）';
+    }
+  }
+
+  async function chooseSink() {
+    if (!outputSupported()) {
+      showToast({ text: '这个浏览器不支持选输出设备', sub: '请在 Windows「设置 → 系统 → 声音 → 音量合成器」里把 Chrome 的输出改成 VB-Audio' });
+      return;
+    }
+    // 第一次点必须先拿权限，否则设备列表是无标签的，找不到虚拟声卡
+    if (!sinkLabelsUnlocked) {
+      const unlocked = await unlockSinkLabels();
+      if (!unlocked) {
+        showToast({
+          text: '需要一次权限才能看到设备名',
+          sub: '浏览器会弹「使用麦克风」提示，点允许即可（不会真的录音）。拒绝的话就用音量合成器手动改',
+        });
+      }
+      await refreshSinks();
+    }
+
+    if (!sinks.length) await refreshSinks();
+    // 优先推荐虚拟声卡
+    const cable = sinks.find((d) => /VB-Audio|CABLE|VoiceMeeter/i.test(d.label || ''));
+    if (cable) {
+      try {
+        await audio.setSinkId(cable.deviceId);
+        rememberSink(cable.deviceId, cable.label);
+        showToast({ text: '已把音乐输出到虚拟声卡', sub: cable.label + '　以后会自动记住' });
+        await refreshSinks();
+        return;
+      } catch (err) {
+        showToast({ text: '切换输出设备失败', sub: err.message });
+      }
+    }
+    // 没有虚拟声卡（或切换失败）时，把可选设备列出来让主播自己挑
+    const named = sinks.filter((d) => d.label);
+    if (!named.length) {
+      showToast({ text: '读不到设备名', sub: '授权被拒绝了？请在地址栏左侧的图标里允许「声音」，刷新后再试' });
+      return;
+    }
+    const list = named.map((d, i) => `${i + 1}. ${d.label}`).join('\n');
+    const pick = prompt('选择输出设备（输入编号）：\n' + list, '1');
+    const idx = Number(pick) - 1;
+    if (!named[idx]) return;
+    try {
+      await audio.setSinkId(named[idx].deviceId);
+      rememberSink(named[idx].deviceId, named[idx].label);
+      showToast({ text: '输出设备已切换', sub: named[idx].label });
+      await refreshSinks();
+    } catch (err) {
+      showToast({ text: '切换失败', sub: err.message });
+    }
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+  }
+
+  $('btn-sink').onclick = () => {
+    chooseSink().catch((err) => showToast({ text: '操作失败', sub: err.message }));
+  };
+  // 插拔设备/换默认设备时自动刷新显示
+  if (navigator.mediaDevices && navigator.mediaDevices.addEventListener) {
+    navigator.mediaDevices.addEventListener('devicechange', () => refreshSinks());
+  }
+
+  connect();
+  setVolume(0.8);
+  // 页面一打开就把上次选好的输出设备恢复上（否则会先漏一段到耳机）
+  applyRememberedSink().then(() => refreshSinks());
+  // 定期复查（插拔设备/换默认设备），但主播已经选好虚拟声卡后就不再打扰
+  setInterval(() => {
+    if (!sinkPinned) refreshSinks();
+  }, 15000);
+})();
+</script>
+</body>
+</html>

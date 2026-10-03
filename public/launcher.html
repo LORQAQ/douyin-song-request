@@ -1,0 +1,282 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+<title>一键启动向导 · 抖音点歌 → B站音乐</title>
+<style>
+  :root { --bg:#0d1117; --panel:#161b22; --panel2:#1c2330; --line:#2b3444; --text:#e6edf3; --muted:#8b98a9;
+    --brand:#ff2d55; --bili:#00aeec; --ok:#3fb950; --warn:#d29922; }
+  * { box-sizing: border-box; }
+  body { margin:0; background:radial-gradient(1200px 600px at 15% -10%, #1b2331 0%, var(--bg) 55%);
+    color:var(--text); font:14px/1.75 "Microsoft YaHei UI","PingFang SC",system-ui,sans-serif; }
+  .wrap { max-width:900px; margin:0 auto; padding:26px 20px 70px; }
+  h1 { font-size:22px; margin:0 0 6px; }
+  h1 span { color:var(--brand); } h1 em { color:var(--bili); font-style:normal; }
+  .lead { color:var(--muted); margin-bottom:22px; }
+  .card { background:linear-gradient(180deg,var(--panel),#12171f); border:1px solid var(--line);
+    border-radius:12px; padding:18px 20px; margin-bottom:16px; }
+  .card h2 { margin:0 0 4px; font-size:16px; }
+  .card .why { color:var(--muted); font-size:12.8px; margin-bottom:12px; }
+  ol, ul { margin:8px 0 0; padding-left:22px; }
+  li { margin:5px 0; }
+  code, .kbd { background:#0b1017; border:1px solid var(--line); border-radius:6px; padding:1px 7px;
+    font-family:ui-monospace,Consolas,"Cascadia Mono",monospace; font-size:12.5px; color:#a8d7ff; }
+  pre { background:#0b1017; border:1px solid var(--line); border-radius:10px; padding:12px 14px; overflow:auto;
+    font-family:ui-monospace,Consolas,monospace; font-size:12.5px; color:#cfe3f5; }
+  .row { display:flex; gap:9px; flex-wrap:wrap; align-items:center; }
+  button { font:inherit; color:var(--text); cursor:pointer; background:var(--panel2); border:1px solid var(--line);
+    padding:7px 13px; border-radius:9px; }
+  button:hover { background:#232c3b; border-color:#3d4a5f; }
+  button.primary { background:var(--brand); border-color:var(--brand); color:#fff; font-weight:600; }
+  button.bili { background:var(--bili); border-color:var(--bili); color:#04222e; font-weight:700; }
+  .step { display:flex; gap:12px; align-items:flex-start; }
+  .num { flex:none; width:26px; height:26px; border-radius:50%; background:var(--bili); color:#04222e;
+    font-weight:800; display:flex; align-items:center; justify-content:center; margin-top:2px; }
+  .ok { color:var(--ok); font-weight:600; }
+  .warn { color:var(--warn); }
+  .muted { color:var(--muted); }
+  .tag { font-size:11.5px; padding:2px 8px; border-radius:999px; background:#22303f; color:#9fd0ff; }
+  .tag.req { background:#3a1d1d; color:#ffb3b3; }
+  .toast-host { position:fixed; right:18px; bottom:18px; display:flex; flex-direction:column; gap:8px; }
+  .toast-host div { background:#1c2431; border:1px solid var(--line); border-left:3px solid var(--bili);
+    padding:9px 13px; border-radius:8px; box-shadow:0 8px 24px rgba(0,0,0,.45); font-size:13px; }
+  footer { text-align:center; color:#59636f; font-size:12px; margin-top:26px; }
+  a { color:var(--bili); }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>一键启动向导 · 抖音<span>点歌</span> → B站<em>音乐</em></h1>
+  <div class="lead">
+    你用的是<b>抖音直播伴侣</b>（没有浏览器源），所以音乐是通过「虚拟声卡」送进直播伴侣的。
+    下面 4 步做完就能全自动跑起来，之后每次开播只要点一次「启动」。
+  </div>
+
+  <div class="card">
+    <h2>整体链路</h2>
+    <div class="why">音乐从B站到你的直播间，中间经过这些环节：</div>
+    <pre>抖音弹幕「点歌 晴天」
+   ↓  （本程序监听弹幕）
+B站搜索并挑出最合适的 MV / 音频
+   ↓
+本机「音乐播放页」在专用 Chrome 里播放（这个页面出声）
+   ↓  （Chrome 的音频输出被指定到虚拟声卡）
+VB-CABLE 虚拟声卡：CABLE Input → CABLE Output
+   ↓
+直播伴侣：麦克风/音频输入 选「CABLE Output」
+   ↓
+直播间观众听到音乐</pre>
+  </div>
+
+  <div class="card">
+    <h2>第 1 步 · 打开音乐播放页 <span class="tag">必须一直开着</span></h2>
+    <div class="why">这个页面负责出声。它是独立页面，即使关掉控制台，只要它开着音乐就不会断。</div>
+    <div class="row">
+      <button class="primary" id="open-audio">🔊 打开音乐播放页</button>
+      <button id="copy-audio">复制地址</button>
+      <button id="test-beep">🔔 播放测试音</button>
+      <span class="muted" id="audio-url"></span>
+    </div>
+    <div class="muted" style="margin-top:10px">
+      提示：请把它放在<b>不会被关掉</b>的位置（最小化即可）。页面右上角有「下一首」和「静音」。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>第 2 步 · 把音乐送进虚拟声卡 <span class="tag">只需设置一次</span></h2>
+    <div class="why">
+      这是最关键的一步。<b>推荐用播放页自带的「输出设备」按钮</b>——Chrome 会记住这个选择，
+      以后开播都不用再设置，也不会影响你自己听歌。
+    </div>
+    <ol>
+      <li>打开 <a href="/audio" target="_blank">音乐播放页</a></li>
+      <li>点右上角的 <b>🔈 输出设备</b> 按钮</li>
+      <li>它会自动帮你切到 <code>VB-Audio Virtual Cable</code>，并弹提示确认</li>
+      <li>播放页上会显示一行绿字：<b>✅ 已指向虚拟声卡，直播伴侣可以读到了</b></li>
+    </ol>
+    <div class="warn">
+      ⚠️ 这行字必须是绿的。还是黄色就说明 Chrome 没在读虚拟声卡，观众听不到。
+    </div>
+    <div class="muted">
+      <b>备选做法</b>（如果播放页那个按钮不灵）：
+      右键任务栏喇叭 → <b>声音设置</b> → <b>音量合成器</b> → 找到正在放音乐的 <b>Chrome</b> → 把「输出设备」改成
+      <code>VB-Audio Virtual Cable</code>。
+    </div>
+    <div class="muted" style="margin-top:8px">
+      <b>重要</b>：Windows 的<b>默认播放设备</b>请保持你的耳机/音箱，<b>不要</b>设成虚拟声卡，
+      否则你自己就听不到声音了。我们只改 Chrome 这一路。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>关于「你自己平时用的 Chrome」</h2>
+    <div class="why">
+      程序用的是<b>独立的 Chrome 实例 + 独立配置目录</b>（<code>.chrome-player-profile</code>），
+      和你平时上网的 Chrome 完全是两套，互不影响：
+    </div>
+    <ul>
+      <li>✅ 你不开专用播放器，平时照样用 Chrome 上网、看视频</li>
+      <li>✅ 两个可以同时开着，登录状态、插件、历史记录互不干扰</li>
+      <li>✅ <b>只有专用播放器窗口</b>会把声音送去虚拟声卡；你自己那个 Chrome 仍然走耳机/音箱</li>
+      <li>✅ 关掉专用播放器只是停音乐，不影响你自己的浏览器</li>
+    </ul>
+    <div class="muted">
+      想区分两个窗口？专用播放器的窗口标题会显示 <code>🔊 音乐播放页 · 设备名</code>：
+      <b>🔊</b> 表示已经送到虚拟声卡，<b>🔈</b> 表示还没设置好。
+    </div>
+    <div class="warn">
+      ⚠️ 别去 Windows「音量合成器」里把 Chrome 整体改到虚拟声卡——那会连你自己看视频的声音也一起送进直播间。
+      用播放页里那个「🔈 输出设备」按钮，它<b>只改这一个窗口</b>。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>第 4 步 · 让观众看到播放列表 <span class="tag">可选但推荐</span></h2>
+    <div class="why">
+      观众能实时看到「谁点了什么歌」「还有几首在排队」，直播间会热闹很多。
+      做法是加一个<b>背景透明的悬浮层</b>，直播伴侣把它叠在画面上就行。
+    </div>
+
+    <div class="row" style="margin:10px 0">
+      <button id="open-overlay">📋 打开歌单悬浮层</button>
+      <button id="copy-overlay">复制地址</button>
+      <span class="muted" id="overlay-url"></span>
+    </div>
+
+    <ol>
+      <li>先点上面的按钮打开悬浮层（这时它是个普通网页，背景是透明的）</li>
+      <li>回到 <b>直播伴侣</b> → 添加素材 → 选「<b>窗口捕获</b>」（有的版本叫「窗口」）</li>
+      <li>在窗口列表里选标题为「<b>歌单悬浮层</b>」的那个窗口</li>
+      <li>拖动缩放和摆放位置（一般放左侧或右下角，别挡住你的脸）</li>
+    </ol>
+
+    <div class="muted">
+      <b>可调的样子</b>（改地址里的参数就行）：
+      <pre style="margin:6px 0;white-space:pre-wrap">/overlay?scale=1.2&amp;max=8&amp;theme=light
+  scale  整体缩放，默认 1（0.4 ~ 3）
+  max    最多显示几首待播，默认 6（1 ~ 20）
+  theme  light = 浅色主题（默认深色，深色适合大多数直播间）</pre>
+      例：<code>/overlay?scale=1.3&amp;max=10</code> 放大 1.3 倍、最多显示 10 首。
+    </div>
+
+    <div class="warn">
+      ⚠️ 如果窗口捕获出来<b>背景是黑的</b>（不是透明），说明这个捕获方式不支持透明。
+      ① 换「游戏源」或「浏览器源」试试；② 实在不行就改成 <code>/overlay?theme=light</code>，
+      或者干脆用深色主题当一块深色板叠在角落。
+    </div>
+    <div class="muted">
+      悬浮层会<b>自动跟随</b>：当前歌、点歌人、待播队列实时更新，不用管它。
+      它连的是本机服务，<b>不占网速也不影响播放</b>。
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>第 3 步 · 直播伴侣里加一路音频</h2>
+    <div class="why">让观众听到音乐，同时不影响你自己的人声。</div>
+    <ol>
+      <li>打开抖音直播伴侣 → <b>添加素材 / 添加音频</b>（不同版本叫法略有差异）。</li>
+      <li>音频来源优先选 <b>「系统声音 / 扬声器」</b>。</li>
+      <li>如果只给「麦克风」选项：选 <code>CABLE Output (VB-Audio Virtual Cable)</code>。</li>
+      <li>把这一路音量调到合适（建议 60%~80%），别盖过你说话的声音。</li>
+      <li>自己开个小号进直播间听一下，确认：说话正常、音乐正常、没有回声/电流声。</li>
+    </ol>
+    <div class="warn">⚠️ 常见坑：如果直播伴侣的「系统声音」把你自己的麦克风也录进去了，会形成回声。把这一路的监听关掉，并确认系统默认录音设备仍是你的麦克风。</div>
+  </div>
+
+  <div class="card">
+    <h2>第 4 步 · 开播前自检</h2>
+    <ol>
+      <li>控制台左上角「弹幕」应是<b class="ok">绿色已连接</b>；如果是灰色/红色，点「重连弹幕」。</li>
+      <li>在直播间用小号发一句：<code>点歌 晴天</code>。</li>
+      <li>控制台应出现「🎵 xxx 点歌：晴天」，队列里出现匹配到的B站视频。</li>
+      <li>音乐播放页开始出声，直播伴侣的电平表应该跳动。</li>
+    </ol>
+    <div class="row" style="margin-top:10px">
+      <button class="bili" id="open-console">回到控制台</button>
+      <span class="muted">建议再顺手做一次：<code>npm run doctor</code>，它会检查直播间、B站接口、Cookie 状态。</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>可选 · 直播伴侣小窗（浏览器插件）</h2>
+    <div class="why">
+      想在直播伴侣里用浏览器素材显示「当前歌曲 / 下一位」，或者单纯想让弹幕抓取更快，
+      可以装这个扩展：它会在 <code>live.douyin.com</code> 页面上读弹幕并直接推给本程序，还会显示一个悬浮小窗。
+    </div>
+    <div class="row">
+      <button id="dl-ext">⬇ 下载扩展 zip</button>
+      <button id="copy-ext-url">复制下载地址</button>
+    </div>
+    <ol>
+      <li>解压 zip 到任意目录（例如 <code>D:\dsh-extension</code>）。</li>
+      <li>Chrome 打开 <code>chrome://extensions</code> → 右上角打开<b>开发者模式</b> → 「加载已解压的扩展程序」→ 选解压出来的目录。</li>
+      <li>在直播伴侣里添加「浏览器」素材，地址填 <code>https://live.douyin.com/你的直播间号</code> 即可，小窗会自己出现。</li>
+    </ol>
+    <div class="muted">
+      注意：这个扩展只是「加速/展示」用途。不装它，本程序自己也能通过协议直连或浏览器兜底抓弹幕。
+    </div>
+  </div>
+
+  <footer>本地运行 · 所有数据都在你电脑上 · <a href="/api/status" target="_blank">接口状态</a></footer>
+</div>
+<div class="toast-host" id="toasts"></div>
+<script>
+(function () {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const base = location.origin;
+  $('audio-url').textContent = base + '/audio';
+  $('overlay-url').textContent = base + '/overlay';
+
+  function toast(text) {
+    const d = document.createElement('div');
+    d.textContent = text;
+    $('toasts').appendChild(d);
+    setTimeout(() => d.remove(), 2600);
+  }
+  async function copy(text, label) {
+    try {
+      await navigator.clipboard.writeText(text);
+      toast(label + '已复制');
+    } catch {
+      toast('复制失败，请手动选中复制');
+    }
+  }
+
+  $('open-audio').onclick = () => window.open(base + '/audio', '_blank');
+  $('copy-audio').onclick = () => copy(base + '/audio', '播放页地址');
+  $('open-overlay').onclick = () => window.open(base + '/overlay', '_blank', 'width=760,height=520');
+  $('copy-overlay').onclick = () => copy(base + '/overlay', '悬浮层地址');
+  $('open-console').onclick = () => { location.href = '/'; };
+  $('dl-ext').onclick = () => { location.href = '/extension.zip'; };
+  $('copy-ext-url').onclick = () => copy(base + '/extension.zip', '下载地址');
+
+  // 播放测试音：直接用 WebAudio 生成一段 3 秒的旋律，不依赖任何素材
+  $('test-beep').onclick = () => {
+    try {
+      const ctx = new (window.AudioContext || window.webkitAudioContext)();
+      const notes = [523.25, 659.25, 783.99, 1046.5];
+      notes.forEach((freq, i) => {
+        const osc = ctx.createOscillator();
+        const gain = ctx.createGain();
+        osc.type = 'sine';
+        osc.frequency.value = freq;
+        const t0 = ctx.currentTime + i * 0.35;
+        gain.gain.setValueAtTime(0.0001, t0);
+        gain.gain.exponentialRampToValueAtTime(0.25, t0 + 0.03);
+        gain.gain.exponentialRampToValueAtTime(0.0001, t0 + 0.32);
+        osc.connect(gain).connect(ctx.destination);
+        osc.start(t0);
+        osc.stop(t0 + 0.34);
+      });
+      toast('已播放测试音：耳机里听不到才说明送到了虚拟声卡');
+    } catch (err) {
+      toast('播放失败：' + err.message);
+    }
+  };
+})();
+</script>
+</body>
+</html>
