@@ -809,6 +809,30 @@ function scoreCandidate(candidate, query, cfg = {}) {
     }
   }
 
+  /**
+   * 3c) 【同名不同歌·歧义标题】
+   *
+   * 有些歌名被很多歌手用过，且每首都是名曲 —— 例如：
+   *   Alone  → Heart(1987) / Marshmello(2016) / Alan Walker(2016) / Sistar…
+   *   Stay   → Rihanna / The Kid LAROI / Zedd / Kygo…
+   *   Hello  → Adele / Lionel Richie / Martin Solveig…
+   * 观众只发「点歌 Alone」（不带歌手名）时，光靠歌名根本分不出是哪一首。
+   *
+   * 实测「Alone」的问题：一个 6.9 万播放、标题就叫 Alone 的普通投稿拿了 199 分排第一，
+   * 而 372 万播放的名曲版只有 166 分 —— 因为"标题完全吻合"的加分
+   * 压过了播放量的权重（播放量最高只加 30 分）。
+   *
+   * 判断"歧义"：短 + 不含中日韩文字 + 是常见英文词。
+   * 对这类标题：**提高播放量权重**（名曲必然播放量高），这是最可靠的"该选哪首"信号。
+   */
+  const isLatinShort = q.length <= 8 && !/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(q);
+  if (isLatinShort && titleUsable && play > 0) {
+    // 播放量额外加成：10万 +8 / 100万 +16 / 1000万 +24
+    const popBonus = Math.min(24, Math.log10(Math.max(play, 1)) * 4);
+    score += popBonus;
+    if (popBonus >= 8) reasons.push(`歧义标题·按热度加权(+${Math.round(popBonus)})`);
+  }
+
   // 4) 黑名单：翻唱/鬼畜/教学等，逐条扣分
   const blacklist = cfgLocal.blacklistKeywords || [];
   const lowerTitle = title.toLowerCase();
