@@ -49,7 +49,8 @@
     "rank": "node scripts/rank-debug.js",
     "watch": "node scripts/watch.js",
     "pin": "node scripts/make-pins.js",
-    "index": "node scripts/index-collections.js"
+    "index": "node scripts/index-collections.js",
+    "overlay:capture": "overlay\\\\bin\\\\SongOverlay.exe --fixed"
   },
   "dependencies": {
     "ws": "^8.18.0"

@@ -23,7 +23,7 @@ namespace SongOverlay
     ///   3) 零运行时依赖：编译成单个 exe，不用装 Electron / 不用开浏览器。
     ///
     /// 用法：
-    ///   SongOverlay.exe [--port 8787] [--max 6] [--left 40] [--top -1] [--fixed]
+    ///   SongOverlay.exe [--port 8787] [--max 6] [--left 40] [--top -1] [--fixed] [--no-taskbar]
     ///   快捷键：Ctrl+Alt+T 切换鼠标穿透 / Ctrl+Alt+M 关穿透 / Ctrl+Alt+Q 退出
     /// </summary>
     internal static class Program
@@ -33,6 +33,20 @@ namespace SongOverlay
         public static int LeftPos = 40;
         public static int TopPos = -1;
         public static bool ClickThrough = true;
+
+        /// <summary>
+        /// 是否隐藏任务栏按钮 / 不进 Alt+Tab。
+        ///
+        /// 【默认 false，这一点很重要】
+        /// 原来默认设了 WS_EX_TOOLWINDOW（不进 Alt+Tab）+ ShowInTaskbar=false，
+        /// 结果直播伴侣的「窗口捕获」找不到这个窗口 ——
+        /// 不少采集软件会主动跳过"工具窗口"，而 ShowInTaskbar=false 还会让
+        /// WinForms 建一个隐藏的 Owner 窗口，采集软件常把"有 Owner 的窗口"当对话框忽略。
+        ///
+        /// 所以现在默认**像一个普通程序窗口**（能出现在 Alt+Tab 和任务栏），
+        /// 优先保证能被找到。真嫌它碍事，加 --no-taskbar 就恢复旧行为。
+        /// </summary>
+        public static bool NoTaskbar = false;
 
         [STAThread]
         private static void Main(string[] args)
@@ -46,6 +60,7 @@ namespace SongOverlay
                 else if (a == "--left" && v != null) LeftPos = int.Parse(v);
                 else if (a == "--top" && v != null) TopPos = int.Parse(v);
                 else if (a == "--fixed") ClickThrough = false;
+                else if (a == "--no-taskbar") NoTaskbar = true;
             }
 
             Application.EnableVisualStyles();
@@ -193,7 +208,10 @@ namespace SongOverlay
         public OverlayForm()
         {
             FormBorderStyle = FormBorderStyle.None;
-            ShowInTaskbar = false;
+            // 【默认让它像普通窗口】直播伴侣的窗口捕获要靠枚举找到它。
+            // ShowInTaskbar=false 会让 WinForms 建一个隐藏 Owner 窗口，
+            // 而"有 Owner 的顶层窗口"常被采集软件当成对话框忽略掉。
+            ShowInTaskbar = !Program.NoTaskbar;
             TopMost = true;
             StartPosition = FormStartPosition.Manual;
             Text = "歌单悬浮窗";
@@ -201,9 +219,13 @@ namespace SongOverlay
             Width = 520;
             Height = 320;
 
-            // 分层窗口 + 不使用激活（点它不抢焦点）+ 工具窗口（不进 Alt+Tab）
+            // 分层窗口（真透明）+ 不使用激活（点它不抢焦点）
             int ex = GetWindowLong(Handle, GWL_EXSTYLE);
-            ex |= WS_EX_LAYERED | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE;
+            ex |= WS_EX_LAYERED | WS_EX_NOACTIVATE;
+            // WS_EX_TOOLWINDOW 会让一部分采集软件直接跳过这个窗口，
+            // 所以只在用户明确要 --no-taskbar 时才加。
+            if (Program.NoTaskbar) ex |= WS_EX_TOOLWINDOW;
+            else ex &= ~WS_EX_TOOLWINDOW;
             if (Program.ClickThrough) ex |= WS_EX_TRANSPARENT;
             SetWindowLong(Handle, GWL_EXSTYLE, ex);
 

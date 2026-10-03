@@ -1,4 +1,4 @@
-﻿# 编译歌单悬浮窗相关的所有程序（用系统自带的 C# 编译器，不需要装 SDK）
+# 编译歌单悬浮窗相关的所有程序（用系统自带的 C# 编译器，不需要装 SDK）
 #
 # 为什么用 csc.exe 而不是 dotnet：
 #   Windows 自带 .NET Framework 的 C# 编译器，直接产出单个 exe，
@@ -27,7 +27,8 @@ Write-Host ""
 $targets = @(
   @{ src = 'SongOverlay.cs';   exe = 'SongOverlay.exe';   ui = $true;  desc = '歌单悬浮窗（透明置顶）' },
   @{ src = 'OverlayPlacer.cs'; exe = 'OverlayPlacer.exe'; ui = $true;  desc = '摆位工具（拖动/贴角/穿透）' },
-  @{ src = 'WhereIsIt.cs';     exe = 'WhereIsIt.exe';     ui = $false; desc = '查位置（命令行）' }
+  @{ src = 'WhereIsIt.cs';     exe = 'WhereIsIt.exe';     ui = $false; desc = '查位置（命令行）' },
+  @{ src = 'WinDiag.cs';       exe = 'WinDiag.exe';       ui = $false; desc = '窗口诊断（直播伴侣找不到时用）' }
 )
 
 $ok = 0
@@ -68,5 +69,9 @@ if ($ok -eq $targets.Count) {
 Write-Host ""
 Write-Host "启动方式:"
 Write-Host "   悬浮窗        npm run overlay"
+Write-Host "   捕获兼容模式  npm run overlay:capture   （直播伴侣找不到时用）"
 Write-Host "   摆位工具      npm run overlay:place"
 Write-Host "   查位置        npm run overlay:where"
+Write-Host "   窗口诊断      overlay\bin\WinDiag.exe   （列出所有可捕获窗口及其属性）"
+Write-Host ""
+Write-Host "提示：编译前先关掉正在运行的悬浮窗，否则 exe 被占用会写不进去。" -ForegroundColor DarkGray
