@@ -197,11 +197,18 @@ const skip = (name, why) => {
   // ---- 4) Release ----
   log('');
   log('  【Release】');
+  /**
+   * 版本号从 package.json 读，**不要在测试里写死**。
+   * 之前这里硬编码 `v1.0.0`，发了新版本之后这个检查还在看旧 Release，
+   * 结果报出一个早已不存在的问题（tag 指向旧 commit），白折腾一轮。
+   */
+  const pkgVersion = JSON.parse(require('fs').readFileSync(require('path').join(__dirname, '..', 'package.json'), 'utf8')).version;
+  const REL_TAG = `v${pkgVersion}`;
   if (rateHit) {
     skip('Release 检查', 'API 限流');
   } else {
     try {
-      const r = await fetch(`${API}/releases/tags/v1.0.0`, {
+      const r = await fetch(`${API}/releases/tags/${REL_TAG}`, {
         headers: AUTH_HEADERS,
         signal: AbortSignal.timeout(25000),
       });
@@ -210,14 +217,14 @@ const skip = (name, why) => {
         skip('Release 检查', 'API 限流');
       } else {
         const rel = JSON.parse(raw);
-        check('v1.0.0 已发布', r.status === 200 && rel.draft === false, rel.tag_name || '');
+        check(`${REL_TAG} 已发布`, r.status === 200 && rel.draft === false, rel.tag_name || '');
         check('是正式版（非预发布）', rel.prerelease === false);
         check('有说明正文', (rel.body || '').length > 500, `${(rel.body || '').length} 字符`);
         check('有附件', Array.isArray(rel.assets) && rel.assets.length > 0, (rel.assets || []).map((a) => a.name).join(','));
-        check('是 latest', rel.tag_name === 'v1.0.0');
-        // v1.0.0 的 tag 应该指向 main（否则 Release 源码包会缺文件）
+        check('是 latest', rel.tag_name === REL_TAG);
+        // 这个版本的 tag 应该指向 main（否则 Release 源码包会缺文件）
         if (meta) {
-          const tr = await fetch(`${API}/git/ref/tags/v1.0.0`, {
+          const tr = await fetch(`${API}/git/ref/tags/${REL_TAG}`, {
             headers: AUTH_HEADERS,
             signal: AbortSignal.timeout(20000),
           });
@@ -231,7 +238,29 @@ const skip = (name, why) => {
             const mraw = await mr.text();
             if (!isRateLimited(mr.status, mraw)) {
               const m = JSON.parse(mraw);
-              check('tag 指向最新 commit', tag.object.sha === m.object.sha, `${tag.object.sha.slice(0, 8)} / ${m.object.sha.slice(0, 8)}`);
+              /**
+               * tag 可能是 annotated tag，此时 `object.type === 'tag'`、
+               * `object.sha` 指向的是 **tag 对象**而不是 commit ——
+               * 直接和 main 的 commit sha 比会永远不等。
+               * 所以要先解引用一次拿到真正的 commit。
+               */
+              let tagSha = tag.object && tag.object.sha;
+              if (tag.object && tag.object.type === 'tag' && tag.object.url) {
+                const dr = await fetch(tag.object.url, {
+                  headers: AUTH_HEADERS,
+                  signal: AbortSignal.timeout(20000),
+                });
+                const draw = await dr.text();
+                if (!isRateLimited(dr.status, draw)) {
+                  const deref = JSON.parse(draw);
+                  if (deref.object && deref.object.sha) tagSha = deref.object.sha;
+                }
+              }
+              check(
+                'tag 指向最新 commit',
+                tagSha === m.object.sha,
+                `${String(tagSha).slice(0, 8)} / ${String(m.object.sha).slice(0, 8)}`
+              );
             }
           }
         }
