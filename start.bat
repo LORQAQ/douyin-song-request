@@ -26,7 +26,8 @@ echo Audio   : http://127.0.0.1:8787/audio
 echo Close this window to stop the service.
 echo.
 
-rem 顺带把歌单悬浮窗拉起来（已经在跑就跳过），这样点歌和歌单一起就绪
+rem 顺带把歌单悬浮窗拉起来（已经在跑就跳过）。
+rem 悬浮窗是独立子项目，不随这个仓库分发 —— 自己编译好放在 overlay\bin\ 才会启动。
 if exist "overlay\bin\SongOverlay.exe" (
   tasklist /fi "imagename eq SongOverlay.exe" 2>nul | findstr /i "SongOverlay.exe" >nul
   if errorlevel 1 (
