@@ -102,4 +102,74 @@ module.exports = function registerMatchingTests({ test, assert }) {
 
     console.log('      → 现场/教学/本人投稿都识别正确');
   });
+
+  /* ---------- 6) 高音质源白名单豁免 ---------- */
+  test('白名单 UP 主要豁免标题启发式的误判', () => {
+    const { scoreCandidate } = require('../src/bilibili/bili-api');
+    const baseCfg = { firstHandOnly: true, minScore: 58 };
+
+    // 实测 JLRS 的投稿：「在百万豪装录音棚**大声听**…」被 reaction 检测当成
+    // reaction 视频，加上二创/非一手扣分后只剩 8 分（门槛 30），
+    // 1162 万播放的正经试听投稿根本进不了候选池。
+    const jlrs = {
+      title: '在百万豪装录音棚大声听米津玄师《Lemon》【Hi-res】',
+      author: 'JLRS-LeoFM',
+      duration: 289,
+      play: 11617665,
+      description: '',
+      tags: [],
+    };
+
+    const withoutTrust = scoreCandidate(jlrs, 'Lemon', { ...baseCfg });
+    const withTrust = scoreCandidate(jlrs, 'Lemon', { ...baseCfg, __trustedUploaders: ['JLRS'] });
+
+    assert.ok(
+      withTrust.score > withoutTrust.score + 100,
+      `白名单应显著提分：${withoutTrust.score} → ${withTrust.score}`
+    );
+    assert.ok(withTrust.score >= 30, `白名单后应过粗排门槛（30），实际 ${withTrust.score}`);
+    assert.ok(
+      !(withTrust.reasons || []).some((r) => /二创\/翻唱/.test(r)),
+      '白名单 UP 不该被判成二创'
+    );
+
+    // 非白名单的教学视频仍然要被压住 —— 豁免不能变成放水
+    const tutorial = scoreCandidate(
+      {
+        title: '零基础学唱《残酷天使的行动纲领》高桥洋子',
+        author: '臧赤君',
+        duration: 255,
+        play: 283127,
+        description: '',
+        tags: [],
+      },
+      '残酷な天使のテーゼ',
+      { ...baseCfg, __trustedUploaders: ['JLRS'] }
+    );
+    assert.ok(tutorial.score < 100, `教学视频仍应低分，实际 ${tutorial.score}`);
+
+    console.log(`      → JLRS ${withoutTrust.score} → ${withTrust.score}，教程仍 ${tutorial.score}`);
+  });
+
+  /* ---------- 7) UP 主名字段兼容 ---------- */
+  test('白名单匹配要认得 author 和 owner 两个字段名', () => {
+    const { BilibiliClient } = require('../src/bilibili/bili-api');
+    const { Logger } = require('../src/lib/logger');
+    const client = new BilibiliClient({ trustedUploaders: ['JLRS'] }, new Logger('t', 'error'));
+
+    // 实测踩过：搜索结果的候选里 UP 主名在 `author`，`owner` 是 undefined。
+    // 只读 owner 的话白名单永远匹配不上。
+    assert.strictEqual(client._isTrustedUploader('JLRS-LeoFM'), true, 'author 里的名字要能匹配');
+    assert.strictEqual(client._isTrustedUploader('JLRS-jayfm'), true, '名字变体也要匹配');
+    assert.strictEqual(client._isTrustedUploader('JLRS日落fm'), true, '中文变体也要匹配');
+    assert.strictEqual(client._isTrustedUploader(''), false, '空名字不能算命中');
+    assert.strictEqual(client._isTrustedUploader(undefined), false, 'undefined 不能算命中');
+
+    // _scoringCfg 必须把白名单挂上去，否则 scoreCandidate 拿不到
+    const cfg = client._scoringCfg();
+    assert.ok(Array.isArray(cfg.__trustedUploaders), '_scoringCfg 要提供 __trustedUploaders');
+    assert.ok(cfg.__trustedUploaders.includes('JLRS'), '白名单内容要带过去');
+
+    console.log('      → author/owner 两个字段名都能匹配');
+  });
 };

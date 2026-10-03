@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 const { BILI_HEADERS, RateLimiter, LruCache, durationTextToSec, stripHtml, sleep, md5, formatDuration } = require('../lib/util');
 
@@ -170,6 +170,19 @@ function collectionTrust(collectionTitle, partTitle, owner, artist) {
   if (/fancam|饭拍|演唱会|巡演|concert|音乐节|现场/.test(coll)) {
     bonus -= 500;
     notes.push('现场/饭拍');
+  }
+
+  /**
+   * ②b 重混/改编/翻奏 —— 也不是原版。
+   *
+   * 实测「Shape of You」：合集分P「Ed Sheeran&Zion & Lennox-Shape of You(**Latin Remix**)」
+   * 因为标题里含 "Ed Sheeran" 拿了「歌手本人合集」的 +150 加成，
+   * 结果压过了 Ed Sheeran 官方账号发的正版 MV。
+   * 主播要的是能唱的原版，Remix 版通常不适合。
+   */
+  if (/remix|re-?mix|混音|改编|改词|翻唱|翻自|cover|伴奏|instrumental|纯音乐|演奏版|钢琴版|吉他版/i.test(coll)) {
+    bonus -= 300;
+    notes.push('重混/改编');
   }
 
   // ③ 第三方杂锦合集（"神仙打架""盘点"这类别人拼的）。
@@ -631,6 +644,22 @@ function scoreCandidate(candidate, query, cfg = {}) {
   const title_ = title;
   const descText = String(candidate.description || '');
   const uploader = String(candidate.author || candidate.owner || '');
+  /**
+   * 【可信 UP 主】是否在人工白名单里。
+   *
+   * 必须在最前面算出来 —— 下面多处惩罚都要豁免它
+   * （实测 JLRS 的「在百万豪装录音棚大声听…」被 reaction 检测误判，
+   *   加上二创/非一手扣分后只剩 8 分，进不了候选池，
+   *   1162 万播放的正经试听投稿就这么被埋了）。
+   */
+  const trustedList = Array.isArray(cfgLocal.__trustedUploaders) ? cfgLocal.__trustedUploaders : [];
+  const isTrusted =
+    trustedList.length > 0 &&
+    trustedList.some((n) => {
+      const t = String(n || '').trim().toLowerCase();
+      const u = uploader.toLowerCase();
+      return t && u && (u.includes(t) || t.includes(u));
+    });
   // 搜索结果自带的标签（不需要额外请求）。拼成一段文本用于判定。
   const searchTags = Array.isArray(candidate.tags) ? candidate.tags.join(' ') : String(candidate.tags || '');
   const instrumental = INSTRUMENTAL_PATTERN.test(title_);
@@ -855,19 +884,28 @@ function scoreCandidate(candidate, query, cfg = {}) {
   }
 
   // 4b-2) 二创（翻唱/改编/remix/鬼畜/选秀…）：主播只要第一手，重罚并标记
-  if (derivative) {
+  //
+  // **白名单 UP 主豁免**：实测 JLRS 的投稿被误判成二创 ——
+  // 「在百万豪装录音棚大声听…」里没有翻唱字样，是 reaction 检测外溢到
+  // derivative 判定的。人工挑过的 UP 主不该再被标题启发式惩罚。
+  if (derivative && !isTrusted) {
     score -= 80;
     reasons.push('二创/翻唱');
+  } else if (derivative && isTrusted) {
+    reasons.push('（白名单UP，豁免二创惩罚）');
   }
 
   // 4b-3) 一手信号（官方/原唱/认证账号）：加分
   if (firstHand) {
     score += 30;
     reasons.push('官方/原唱信号');
-  } else if (excludeNonFirstHand) {
+  } else if (excludeNonFirstHand && !isTrusted) {
     // 不是一手：**降权**而不是丢弃。
     // 但标题基本等于歌名的（多为原曲/官方投稿）不罚——实测很多原曲的 UP
     // 只是普通账号，无认证，罚了就会被切片挤下去。
+    //
+    // 白名单 UP 主也豁免：它们的定位就是"二次上传好音源"，
+    // 天然不满足"一手"，罚它等于自相矛盾。
     if (!titleNearSong) {
       score -= 35;
       reasons.push('非一手（降权）');
@@ -938,7 +976,8 @@ function scoreCandidate(candidate, query, cfg = {}) {
   const noisyTitle = /(直播回放|多p|合集|教程|教学|教大家|教会|解说|reaction|录屏|弹唱|指弹|吉他|钢琴|翻弹|简谱|和弦|鼓谱|扒谱|乐理|新手|入门|速成|挑战|盘点|排行|对比)/i.test(
     title
   );
-  if (noisyTitle) {
+  // 白名单 UP 主豁免这些"标题噪声"惩罚（见下）
+  if (noisyTitle && !isTrusted) {
     score -= 60;
     reasons.push('疑似教程/演奏类视频');
   }
@@ -946,7 +985,12 @@ function scoreCandidate(candidate, query, cfg = {}) {
   // 6b) 反应/切片类：主体是主播反应，音乐只是背景。
   //     但如果标题本身就**基本等于歌名**（多为「XXX单曲《歌名》」这种官方投稿标题），
   //     那这是原曲而不是切片，不该罚——实测蔚蓝边际的原曲就是这么命名的。
-  if (reactionLike && !titleNearSong) {
+  //
+  //     【白名单 UP 主也豁免】实测 JLRS 的「在百万豪装录音棚**大声听**…」被
+  //     reaction 检测误判（"大声听" 像 reaction），加上二创/非一手，总分被压到 8 分
+  //     （门槛 30），于是这个 1162 万播放的正经试听投稿**根本进不了候选池**。
+  //     人工挑过的 UP 主不该再被标题启发式惩罚。
+  if (reactionLike && !titleNearSong && !isTrusted) {
     score -= 25;
     reasons.push('反应/切片类');
   }
@@ -1029,6 +1073,30 @@ class BilibiliClient {
       if (t && (n.includes(t) || t.includes(n))) return true;
     }
     return false;
+  }
+
+  /**
+   * 给 scoreCandidate 用的配置：在 config 上挂一份**可信 UP 主列表**。
+   *
+   * scoreCandidate 是纯函数、拿不到 client 实例，但白名单 UP 主需要豁免
+   * 一些标题启发式的误判（实测 JLRS 的「在百万豪装录音棚大声听…」
+   * 被 reaction 检测当成 reaction 视频，加上二创/非一手扣分后只剩 8 分，
+   * 进不了候选池 —— 1162 万播放的正经试听投稿就这么被埋了）。
+   *
+   * 缓存一下，避免每次打分都重建数组。
+   */
+  _scoringCfg() {
+    const list = [...this._trustedUploaders()];
+    if (
+      this._scoringCfgCache &&
+      this._scoringCfgCache.list.length === list.length &&
+      this._scoringCfgCache.list.every((x, i) => x === list[i])
+    ) {
+      return this._scoringCfgCache.cfg;
+    }
+    const cfg = { ...this.config, __trustedUploaders: list };
+    this._scoringCfgCache = { list, cfg };
+    return cfg;
   }
 
   updateConfig(config) {
@@ -1657,7 +1725,7 @@ class BilibiliClient {
         const { score, reasons, titleMatch, instrumental, derivative, firstHand } = scoreCandidate(
           candidate,
           song,
-          this.config
+          this._scoringCfg()
         );
         return { ...candidate, score, reasons, titleMatch, instrumental, derivative, firstHand };
       });
@@ -1717,7 +1785,11 @@ class BilibiliClient {
     }
     const rescored = result._pool
       .map((c) => {
-        const { score, reasons, titleMatch, instrumental, derivative, firstHand } = scoreCandidate(c, song, this.config);
+        const { score, reasons, titleMatch, instrumental, derivative, firstHand } = scoreCandidate(
+          c,
+          song,
+          this._scoringCfg()
+        );
         return { ...c, score, reasons, titleMatch, instrumental, derivative, firstHand };
       })
       .sort((a, b) => b.score - a.score);
@@ -2153,11 +2225,63 @@ class BilibiliClient {
           if (extra.length) {
             const merged = (search.candidates || []).concat(extra);
             merged.sort((a, b) => b.score - a.score);
-            search = { ...search, candidates: merged.slice(0, Math.max(Number(this.config.maxCandidates ?? 5), 8)) };
+            /**
+             * 【池子要留够大】原来是 `max(maxCandidates, 8)` = 8 条。
+             * 实测「Lemon」：JLRS 那个 1162 万播放的正经试听投稿只有 156 分，
+             * 排到 8 名之外被截掉，于是白名单加分根本没机会作用到它身上。
+             *
+             * 后面还有白名单加分（最多 +200）、歌手硬约束、时长过滤等多道关卡，
+             * 候选池太小会让这些机制无米下锅。放宽到 15。
+             */
+            const poolSize = Math.max(Number(this.config.maxCandidates ?? 5), 15);
+            search = { ...search, candidates: merged.slice(0, poolSize) };
           }
         }
       } catch (err) {
         this.logger.debug(`带歌手名补搜失败（忽略）：${err.message}`);
+      }
+    }
+
+    /**
+     * 【第二步之三·高音质试听号补搜】
+     *
+     * 有些 UP 主专门做「录音棚试听」类投稿，音质干净、时长正常、标题规整，
+     * 是很好的播放源。实测三个名字变体其实是**同一个号**（改过名）：
+     *   JLRS-LeoFM / JLRS-jayfm / JLRS日落fm
+     * 它们的投稿量很大：
+     *     7 711 862 播放  JLRS-LeoFM  在百万豪装录音棚大声听DAOKO&米津玄师《打上花火》【Hi-res】
+     *    11 611 665 播放  JLRS-LeoFM  在百万豪装录音棚大声听米津玄师《Lemon》【Hi-res】
+     *
+     * 【为什么要专门补搜】它们的视频**经常不在默认搜索结果的前 15 条里** ——
+     * 实测搜「Lemon」时候选池里一个 JLRS 都没有，于是选了别人的版本。
+     * 但带上关键字搜（「JLRS Lemon」）第一条就是它。
+     *
+     * 只在配置里声明了这类 UP 主时才做这次补搜（默认空列表 = 不额外花时间）。
+     * 命中后按普通候选参与打分，由白名单加分决定要不要选它。
+     */
+    const hifiUploaders = Array.isArray(this.config.hifiUploaders) ? this.config.hifiUploaders : [];
+    if (hifiUploaders.length && this.config.hifiUploadSearch !== false) {
+      for (const up of hifiUploaders.slice(0, 2)) {
+        const name = String(up || '').trim();
+        if (!name) continue;
+        try {
+          const kw = `${name} ${(meta && meta.songName) || song}`;
+          const hr = await this._searchRawWithKeyword(song, kw);
+          const cands = (hr.candidates || []).filter((c) =>
+            String(c.owner || c.author || '').toLowerCase().includes(name.toLowerCase())
+          );
+          if (!cands.length) continue;
+          const seen = new Set((search.candidates || []).map((c) => c.bvid));
+          const extra = cands.filter((c) => !seen.has(c.bvid));
+          if (extra.length) {
+            this.logger.info(
+              `🎧 高音质源补搜「${kw}」拿到 ${extra.length} 个候选（${String(cands[0].title || '').slice(0, 28)}…）`
+            );
+            search = { ...search, candidates: (search.candidates || []).concat(extra) };
+          }
+        } catch (err) {
+          this.logger.debug(`高音质源补搜失败（忽略）：${err.message}`);
+        }
       }
     }
 
@@ -2291,6 +2415,74 @@ class BilibiliClient {
         };
         this.logger.info(
           `🔀 索引候选加入比较（${Math.round(localCandidate.score)}分），当前最高分：${Math.round(
+            (search.candidates[0] || {}).score || 0
+          )}`
+        );
+      }
+    }
+
+    /**
+     * 【汇总阶段·可信 UP 主加分】
+     *
+     * 合集和本地索引这两条路径**不经过 scoreCandidate**，所以里面的白名单加分
+     * 对它们从不生效。这里在汇总后统一补一次，让白名单 UP 主**能和合集同台竞争**。
+     *
+     * 【定位：稳定的候选来源，不是优先答案】
+     * hifiUploaders（如 JLRS 这类录音棚试听号）的价值是"稳定、音质好、随时有"，
+     * 但**不该因为它就压过歌手本人/官方的投稿** —— 它们是替补，不是首选。
+     * 所以加分只给到"能进前列、能被选中"的程度（+80），
+     * 而不是压过一切。真正决定胜负的仍然是时长吻合度、歌手署名、官方信号。
+     *
+     * trustedUploaders（歌手官方号/唱片公司）给 +60：
+     * 它们本来就该优先，但 scoreCandidate 里已经有认证/官方信号加分了，
+     * 这里只是补一下"没走打分路径"的那部分候选。
+     *
+     * 【注意字段名】搜索结果里 UP 主名在 **`author`**，而合集/索引路径给的是
+     * **`owner`** —— 只读 `owner` 会拿到 undefined，白名单永远匹配不上
+     * （实测就是这么漏的：`_isTrustedUploader(undefined)` → false）。
+     */
+    {
+      const HIFI_BONUS = 80;
+      const TRUSTED_BONUS = 60;
+      const beforeTop = Math.round((search.candidates[0] || {}).score || 0);
+      const hifiList = (Array.isArray(this.config.hifiUploaders) ? this.config.hifiUploaders : [])
+        .map((n) => String(n || '').trim().toLowerCase())
+        .filter(Boolean);
+      const isHifi = (name) => {
+        const u = String(name || '').trim().toLowerCase();
+        return Boolean(u) && hifiList.some((h) => u.includes(h));
+      };
+
+      let boosted = 0;
+      let hifiHit = 0;
+      const withTrust = search.candidates.map((c) => {
+        const uploader = String(c.owner || c.author || '').trim();
+        if (!uploader) return c;
+        if (isHifi(uploader)) {
+          hifiHit += 1;
+          boosted += 1;
+          return {
+            ...c,
+            score: (Number(c.score) || 0) + HIFI_BONUS,
+            reasons: (c.reasons || []).concat([`稳定来源「${uploader}」`]),
+          };
+        }
+        if (this._isTrustedUploader(uploader)) {
+          boosted += 1;
+          return {
+            ...c,
+            score: (Number(c.score) || 0) + TRUSTED_BONUS,
+            reasons: (c.reasons || []).concat([`可信UP「${uploader}」`]),
+          };
+        }
+        return c;
+      });
+
+      if (boosted) {
+        withTrust.sort((a, b) => (b.score || 0) - (a.score || 0));
+        search = { ...search, candidates: withTrust };
+        this.logger.debug(
+          `⭐ 白名单加分：${boosted} 个候选（稳定来源 ${hifiHit} 个），最高分 ${beforeTop} → ${Math.round(
             (search.candidates[0] || {}).score || 0
           )}`
         );
@@ -2851,40 +3043,20 @@ class BilibiliClient {
       if (primary && diff > 25) continue;
 
       /**
-       * 【合集质量】不是所有"合集"都适合当原版来源。
+       * 【合集质量】统一用 collectionTrust()，**不要再在这里内联一份判断**。
        *
-       * 实测踩过的坑（全都是硬编码 1100 分碾压正确答案）：
-       *   「Gangnam Style」→ PSY《2026 SUMMER SWAG》**Fancam合集** P20   ← 演唱会饭拍
-       *   「残酷な天使のテーゼ」→ 零基础**学唱**教程                      ← 教学视频
-       *   「晴天」→ 【神仙打架】华语乐坛150首歌曲合集（别人的杂锦合集）    ← 不是歌手本人的
+       * 之前这里是内联逻辑，而 collectionTrust 是后来抽出来的 ——
+       * 结果两条路径的规则不一致：collectionTrust 有「重混/改编」惩罚，
+       * 内联这份没有。实测「Shape of You」的
+       * 「Ed Sheeran&Zion & Lennox-Shape of You(**Latin Remix**)」
+       * 就从这个缺口溜进来，以 420 分压过了 Ed Sheeran 官方账号的原版 MV。
        *
-       * 所以这里给每个命中算一个"可信度加成"，而不是一律 1100 分。
+       * 抽函数的意义就在于只有一份规则；这里补齐。
        */
-      const coll = `${v.collectionTitle || ''} ${v.part || ''}`.toLowerCase();
-      let bonus = 0;
-      const notes = [];
+      const trust = collectionTrust(v.collectionTitle, v.part, v.owner, artist);
+      if (trust.reject) continue;
 
-      // ① 现场/饭拍/演唱会 —— 不是录音室原版，重罚
-      if (/fancam|饭拍|演唱会|巡演|concert|live\s*(现场|版)|音乐节|fm\b/.test(coll)) {
-        bonus -= 500;
-        notes.push('现场/饭拍');
-      }
-      // ② 教学/翻唱/伴奏类 —— 直接排除
-      if (/学唱|教程|教学|翻唱|cover|伴奏|instrumental|吉他谱|钢琴谱|简谱/.test(coll)) {
-        continue;
-      }
-      // ③ 合集归属：UP 主就是这位歌手 = 最可信（他自己发的合集）
-      if (String(v.owner || '').toLowerCase().includes(artist.toLowerCase())) {
-        bonus += 120;
-        notes.push('歌手本人投稿');
-      }
-      // ④ 杂锦合集（"神仙打架""精选""盘点"这类由第三方拼的）降低可信度
-      if (/神仙打架|盘点|合集汇总|杂锦|串烧|top\d|排行榜/.test(String(v.collectionTitle || ''))) {
-        bonus -= 120;
-        notes.push('第三方杂锦');
-      }
-
-      hits.push({ ...v, diff, bonus, notes });
+      hits.push({ ...v, diff, bonus: trust.bonus, notes: trust.notes });
     }
     if (!hits.length) return null;
 
@@ -2893,10 +3065,19 @@ class BilibiliClient {
     const best = hits[0];
 
     // 分数 = 基础分 + 可信度加成。
-    // 原来是死值 1100，会碾压一切 —— 包括现场饭拍和第三方杂锦合集。
-    // 现在：歌手本人投稿的合集 ≈ 1180，普通合集 ≈ 1060，
-    //       现场/饭拍 ≈ 560（低于正常候选里最靠谱的那些，不再碾压）。
-    const score = 1060 + Number(best.bonus || 0);
+    //
+    // 【为什么基础分从 1060 一路降到 420】原来 1060 比普通候选（100~300）
+    // 高一个数量级，等于"只要命中合集就赢"。实测它压过了：
+    //   · JLRS 那个 1162 万播放的正经试听投稿（Lemon）
+    //   · Ed Sheeran 官方账号发的原版 MV（Shape of You，被一个 Latin Remix 分P 挤掉）
+    //
+    // 420 的定位是"合集会进前列，但必须靠时长吻合 + 歌手署名 + 非重混 来守住位置"：
+    //   歌手本人投稿的合集 ≈ 570（+150）
+    //   普通合集           ≈ 420
+    //   重混/改编          ≈ 120（-300）
+    //   现场/饭拍          ≈ -80（-500）
+    // 白名单/稳定来源（+60/+80）和播放量信号都能把它掀翻 —— 这才是想要的竞争关系。
+    const score = 420 + Number(best.bonus || 0);
 
     this.logger.info(
       `📚 在合集「${String(best.collectionTitle).slice(0, 24)}」里命中「${best.part}」` +

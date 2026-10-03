@@ -197,7 +197,8 @@
     "useArtistCollection": true,
     "verifyWithBiliFacts": true,
     "factsLookupLimit": 5,
-    "useOriginalArtistInSearch": true
+    "useOriginalArtistInSearch": true,
+    "hifiUploaders": []
   },
   "playback": {
     "mode": "queue",
