@@ -16,8 +16,18 @@ const { execFileSync, spawnSync } = require('child_process');
 const ROOT = path.resolve(__dirname, '..');
 const OWNER = 'LORQAQ';
 const REPO = 'douyin-song-request';
+
+/**
+ * 版本号以 package.json 为**单一事实来源**（和 make-release.js 一致）。
+ *
+ * 之前这里和 make-release.js 各自写死 'v1.0.0'，发新版时两边会对不上 ——
+ * 实测发 v1.0.1 时打包出来的 zip 叫 `-v1.0.0.zip`，
+ * 而 make-release 去找 `-v1.0.1.zip`，结果附件上传失败（附件数 0）。
+ */
+const PKG = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8'));
+const TAG = `v${PKG.version}`;
 const WORK = path.join(os.tmpdir(), 'overlay-pkg');
-const OUT = path.join(os.tmpdir(), 'douyin-song-request-overlay-v1.0.0.zip');
+const OUT = path.join(os.tmpdir(), `douyin-song-request-overlay-${TAG}.zip`);
 
 const FILES = [
   'SongOverlay.cs',

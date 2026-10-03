@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 /**
  * 创建 GitHub Release（走 API，因为本机 github.com:443 不通）。
  *
@@ -14,8 +14,19 @@ const { spawnSync } = require('child_process');
 
 const OWNER = 'LORQAQ';
 const REPO = 'douyin-song-request';
-const TAG = process.argv[2] || 'v1.0.0';
-const ASSET = process.argv[3] || path.join(process.env.TEMP, 'douyin-song-request-overlay-v1.0.0.zip');
+
+/**
+ * 版本号以 package.json 为**单一事实来源**。
+ *
+ * 之前这里是写死的 'v1.0.0'，结果发 v1.0.1 时（`node scripts/make-release.js v1.0.1`）
+ * 附件名仍是 `overlay-${TAG}.zip`、Release 标题也还写着「首个正式版」——
+ * 版本号散落在多处就一定会不同步。
+ * 现在：命令行参数可覆盖，否则读 package.json。
+ */
+const PKG = JSON.parse(fs.readFileSync(path.join(__dirname, '..', 'package.json'), 'utf8'));
+const TAG = process.argv[2] || `v${PKG.version}`;
+const VER = TAG.replace(/^v/, '');
+const ASSET = process.argv[3] || path.join(process.env.TEMP, `douyin-song-request-overlay-${TAG}.zip`);
 
 const LOG = path.join(process.env.TEMP, 'release-out.txt');
 try { fs.unlinkSync(LOG); } catch {}
@@ -50,7 +61,7 @@ async function api(method, url, body, raw = false) {
   return { status: res.status, json, text };
 }
 
-const NOTES = `## 抖音弹幕点歌 v1.0.0
+const NOTES = `## 抖音弹幕点歌 ${TAG}
 
 观众在抖音直播间发一句 **「点歌 晴天」**，程序自动去 B 站找到最合适的视频、**只放声音**送进你的抖音直播伴侣。
 
@@ -64,7 +75,7 @@ npm install
 start.bat
 \`\`\`
 
-**附件里的 \`overlay-v1.0.0.zip\` 是歌单悬浮窗的预编译程序**，
+**附件里的 \`overlay-${TAG}.zip\` 是歌单悬浮窗的预编译程序**，
 给不想自己编译的人用 —— 解压到 \`overlay\\bin\\\` 即可（不装它也能正常点歌）。
 
 ### 亮点
@@ -167,7 +178,7 @@ B 站搜索结果每次都不一样，但合集中的曲目是确定的 ——
   const created = await api('POST', `/repos/${OWNER}/${REPO}/releases`, {
     tag_name: TAG,
     target_commitish: head,
-    name: `v1.0.0 — 抖音弹幕点歌 首个正式版`,
+    name: `${TAG} — 抖音弹幕点歌`,
     body: NOTES,
     draft: false,
     prerelease: false,
