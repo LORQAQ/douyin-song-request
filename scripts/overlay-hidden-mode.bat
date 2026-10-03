@@ -41,11 +41,15 @@ echo.
 echo   1. Put the Live Companion window in FRONT of the overlay
 echo      (or make it fullscreen). The overlay should now be hidden.
 echo   2. Check the Live Companion preview:
-rem  NOTE: ">" inside an echo must be escaped as "^>", otherwise cmd treats it
-rem        as a file redirect - it silently creates a junk file and swallows
-rem        the line. (This bit us once: a stray file named "works" appeared.)
-echo        - overlay content IS visible  --^> works, keep this mode
-echo        - blank / wrong content       --^> not supported,
+rem  NOTE: never put ">" in an echo line, not even escaped. Why:
+rem          echo ... -^> not supported
+rem        parses as  echo ... -  > not supported
+rem        i.e. cmd sees a file named "-" ... actually it creates a junk file
+rem        named "not" and swallows the text. Escaping does NOT save you here
+rem        because cmd re-parses after removing the caret.
+rem        So: use plain words instead of arrows in echo. (Learned the hard way.)
+echo        - overlay content IS visible   = it works, keep this mode
+echo        - blank or wrong content       = not supported,
 echo                                         use the normal launcher
 echo   3. Ctrl+Alt+Q quits the overlay.
 echo.
