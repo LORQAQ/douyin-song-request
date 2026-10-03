@@ -1083,6 +1083,16 @@ const testConfig = {
     console.log(`  ✗ 回归测试整体失败：${err.message}`);
   }
 
+  // ---- 批处理安全检查（cmd 按本地编码解析 .bat，中文会导致双击打不开）----
+  console.log('\n【批处理安全检查】cmd 能吃才算合格');
+  try {
+    const registerBatch = require('./regression-batch');
+    registerBatch({ test, assert });
+  } catch (err) {
+    failed += 1;
+    console.log(`  ✗ 批处理检查整体失败：${err.message}`);
+  }
+
   console.log(`\n结果：通过 ${passed} 项，失败 ${failed} 项\n`);
 
   // 【不能用 process.exit()】

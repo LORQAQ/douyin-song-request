@@ -40,8 +40,10 @@ echo   [3/3] Opening audio page (this one makes sound) ...
 timeout /t 1 /nobreak >nul
 start "" "http://127.0.0.1:8787/audio"
 
-rem 歌单悬浮窗是独立子项目，不随本仓库分发。
-rem 自己编译好放进 overlay\bin\ 的话这里会顺手启动它。
+rem The song-list overlay is an independent add-on, NOT shipped with this repo.
+rem If you compiled it into overlay\bin\, start it too.
+rem IMPORTANT: keep this file pure ASCII - cmd parses .bat using the local
+rem codepage, so UTF-8 Chinese bytes here break the whole script.
 if exist "%~dp0..\overlay\bin\SongOverlay.exe" (
   echo   [+] Starting song-list overlay ...
   tasklist /fi "imagename eq SongOverlay.exe" 2>nul | findstr /i "SongOverlay.exe" >nul
