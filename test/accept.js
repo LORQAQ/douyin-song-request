@@ -120,8 +120,12 @@ const skip = (name, why) => {
     ['src/server.js', (t) => t.includes('_isLocalOrigin')],
     ['src/bilibili/bili-api.js', (t) => t.length > 10000],
     ['public/audio.html', (t) => t.includes('watchdogFails')],
-    ['public/overlay.html', (t) => t.includes('<')],
+    // 注：public/overlay.html 已经移除（浏览器版歌单页拆掉了），
+    // 它现在应该 404，所以放到下面的"必须不存在"清单里。
+    // 悬浮窗本体在 overlay/ 子项目里：
     ['overlay/SongOverlay.cs', (t) => t.includes('UpdateLayeredWindow')],
+    ['overlay/README.md', (t) => t.includes('通信协议') || t.includes('协议')],
+    ['overlay/build.bat', (t) => t.includes('csc.exe')],
     ['scripts/start-all.bat', (t) => t.length > 100],
     ['scripts/stop-all.ps1', (t) => t.includes('Stop-Process')],
     ['.github/workflows/ci.yml', (t) => t.includes('npm test')],
@@ -140,12 +144,24 @@ const skip = (name, why) => {
 
   // ---- 3) 敏感文件绝不能出现在仓库里 ----
   log('');
-  log('  【敏感文件必须不存在】');
-  for (const f of ['config.json', 'pins.json', 'collections-index.json', 'music-meta-cache.json']) {
+  log('  【必须不存在的文件】');
+  for (const f of [
+    // 本地数据（绝不该提交）
+    'config.json',
+    'pins.json',
+    'collections-index.json',
+    'music-meta-cache.json',
+    // 已经移除的东西（浏览器版歌单页 + 一次性测试脚本 + 重复的 overlay 辅助脚本）
+    'public/overlay.html',
+    'test/generic-feeder.js',
+    'scripts/build-overlay.ps1',
+    'scripts/overlay-capture-mode.bat',
+    'scripts/overlay-hidden-mode.bat',
+  ]) {
     if (rateHit) { skip(`${f} 不存在`, 'API 限流'); continue; }
     const { status, rateLimited } = await readFile(f);
     if (rateLimited) { rateHit = true; skip(`${f} 不存在`, 'API 限流'); continue; }
-    // 404 = 不存在（正确）；403 也可能是"内容太大"之类的，但绝不能是 200
+    // 404 = 不存在（正确）；绝不能是 200
     check(`${f} 不存在`, status === 404, `HTTP ${status}`);
   }
 
