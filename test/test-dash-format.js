@@ -53,14 +53,10 @@ for (const msg of MSGS) {
     log('');
     continue;
   }
-  const hints = bili._artistHints(song);
-  log('   解析歌名: 「' + song + '」');
-  log('   歌手线索: ' + JSON.stringify(hints) + (hints.length ? '' : '  ⚠️ 空'));
-
-  // 用假 meta 测 _explicitArtist 能不能挑出歌手
-  const fakeMeta = { artist: 'XXX', songName: song.replace(/^\S+ - /, '') };
-  const picked = bili._explicitArtist(song, fakeMeta);
-  log('   挑出的歌手: ' + (picked ? '「' + picked + '」' : '(没挑出)'));
+  log('   搜索用歌名: 「' + song + '」');
+  // 只有「歌手 - 歌名」格式才会解析出歌手/歌名，别的写法都是空串
+  log('   歌手: ' + (parsed.artist ? '「' + parsed.artist + '」' : '(未指定，走平台数据)'));
+  log('   歌名: ' + (parsed.title ? '「' + parsed.title + '」' : '(未解析)'));
   log('');
 }
 
