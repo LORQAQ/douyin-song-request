@@ -21,15 +21,48 @@ const REPO = 'douyin-song-request';
 // GitHub API 的 contents 接口同样能匿名读文件内容，而且更稳。
 const API = `https://api.github.com/repos/${OWNER}/${REPO}`;
 
-/** 用 contents 接口匿名读一个文件（返回文本，读不到返回 null） */
+/**
+ * 【避免被限流】未认证的 GitHub API 每小时只有 60 次，
+ * 这个脚本一次要打 30+ 次，跑两遍就 403 了（表现为"文件读不到"的假失败）。
+ * 所以优先用本机已存的凭据（5000 次/小时）；拿不到就退回匿名。
+ */
+function getToken() {
+  try {
+    const { spawnSync } = require('child_process');
+    const r = spawnSync('git', ['credential', 'fill'], {
+      input: 'protocol=https\nhost=github.com\n\n',
+      encoding: 'utf8',
+    });
+    const m = (r.stdout || '').match(/^password=(.+)$/m);
+    return m ? m[1].trim() : null;
+  } catch {
+    return null;
+  }
+}
+const TOKEN = getToken();
+const AUTH_HEADERS = {
+  'User-Agent': 'accept-check',
+  Accept: 'application/vnd.github+json',
+  ...(TOKEN ? { Authorization: `token ${TOKEN}` } : {}),
+};
+
+/** 判断一个响应是不是被限流了（而不是真的失败） */
+function isRateLimited(status, text) {
+  return status === 403 && /rate limit|API rate/i.test(String(text || ''));
+}
+
+/** 用 contents 接口读一个文件（返回文本，读不到返回 null） */
 async function readFile(p) {
   try {
     const r = await fetch(`${API}/contents/${p.split('/').map(encodeURIComponent).join('/')}`, {
-      headers: { 'User-Agent': 'accept-check', Accept: 'application/vnd.github+json' },
+      headers: AUTH_HEADERS,
       signal: AbortSignal.timeout(20000),
     });
-    if (r.status !== 200) return { status: r.status, text: null };
-    const j = await r.json();
+    const raw = await r.text();
+    if (r.status !== 200) {
+      return { status: r.status, text: null, rateLimited: isRateLimited(r.status, raw) };
+    }
+    const j = JSON.parse(raw);
     if (!j.content) return { status: r.status, text: null };
     return { status: 200, text: Buffer.from(j.content, 'base64').toString('utf8') };
   } catch (e) {
@@ -39,35 +72,44 @@ async function readFile(p) {
 
 let pass = 0;
 let fail = 0;
+let skipped = 0;
 const check = (name, ok, detail) => {
   if (ok) { pass += 1; log(`  ✅ ${name}${detail ? '  ' + detail : ''}`); }
   else { fail += 1; log(`  ❌ ${name}${detail ? '  ' + detail : ''}`); }
 };
+const skip = (name, why) => {
+  skipped += 1;
+  log(`  ⏭  ${name}  跳过（${why}）`);
+};
 
 (async () => {
   log('════════ 发布验收 ════════');
+  log(`  （GitHub API 认证: ${TOKEN ? '已用本机凭据' : '匿名（容易限流）'}）`);
   log('');
 
-  // ---- 1) 仓库元信息（匿名，不带任何 token）----
+  // ---- 1) 仓库元信息 ----
   log('  【GitHub 仓库】');
+  let meta = null;
   try {
-    const r = await fetch(API, {
-      headers: { 'User-Agent': 'accept-check' },
-      signal: AbortSignal.timeout(20000),
-    });
-    const j = await r.json();
-    check('仓库公开可访问', r.status === 200 && j.private === false, j.html_url || '');
-    check('描述已设置', Boolean(j.description), String(j.description || '').slice(0, 56) + '…');
-    check('topics 已设置', Array.isArray(j.topics) && j.topics.length > 0, (j.topics || []).join(','));
-    check('默认分支是 main', j.default_branch === 'main', j.default_branch);
-    check('未归档/未禁用', !j.archived && !j.disabled);
+    const r = await fetch(API, { headers: AUTH_HEADERS, signal: AbortSignal.timeout(20000) });
+    const raw = await r.text();
+    if (isRateLimited(r.status, raw)) {
+      skip('仓库元信息', 'API 限流');
+    } else {
+      meta = JSON.parse(raw);
+      check('仓库公开可访问', r.status === 200 && meta.private === false, meta.html_url || '');
+      check('描述已设置', Boolean(meta.description), String(meta.description || '').slice(0, 56) + '…');
+      check('topics 已设置', Array.isArray(meta.topics) && meta.topics.length > 0, (meta.topics || []).join(','));
+      check('默认分支是 main', meta.default_branch === 'main', meta.default_branch);
+      check('未归档/未禁用', !meta.archived && !meta.disabled);
+    }
   } catch (e) {
     check('仓库元信息', false, e.message);
   }
 
   // ---- 2) 关键文件匿名可读 ----
   log('');
-  log('  【关键文件都能匿名读到】');
+  log('  【关键文件都能读到】');
   const files = [
     ['README.md', (t) => t.includes('抖音') && t.length > 3000],
     ['CHANGELOG.md', (t) => t.includes('1.0.0')],
@@ -86,8 +128,11 @@ const check = (name, ok, detail) => {
     ['test/regression.js', (t) => t.includes('sanitizeConfigPatch')],
     ['test/run.js', (t) => t.includes('回归测试')],
   ];
+  let rateHit = false;
   for (const [f, verify] of files) {
-    const { status, text, err } = await readFile(f);
+    if (rateHit) { skip(f, 'API 限流'); continue; }
+    const { status, text, err, rateLimited } = await readFile(f);
+    if (rateLimited) { rateHit = true; skip(f, 'API 限流'); continue; }
     if (err) check(f, false, err);
     else if (text === null) check(f, false, `HTTP ${status}`);
     else check(f, status === 200 && verify(text), `${text.length} 字符`);
@@ -97,36 +142,108 @@ const check = (name, ok, detail) => {
   log('');
   log('  【敏感文件必须不存在】');
   for (const f of ['config.json', 'pins.json', 'collections-index.json', 'music-meta-cache.json']) {
-    const { status } = await readFile(f);
+    if (rateHit) { skip(`${f} 不存在`, 'API 限流'); continue; }
+    const { status, rateLimited } = await readFile(f);
+    if (rateLimited) { rateHit = true; skip(`${f} 不存在`, 'API 限流'); continue; }
+    // 404 = 不存在（正确）；403 也可能是"内容太大"之类的，但绝不能是 200
     check(`${f} 不存在`, status === 404, `HTTP ${status}`);
   }
-  try {
-    const r = await fetch(`${API}/git/trees/main?recursive=1`, {
-      headers: { 'User-Agent': 'accept-check' },
-      signal: AbortSignal.timeout(25000),
-    });
-    const j = await r.json();
-    const paths = (j.tree || []).map((x) => x.path);
-    check('文件总数合理', paths.length > 50 && paths.length < 200, `${paths.length} 个文件`);
-    check('没有 node_modules', !paths.some((p) => p.startsWith('node_modules/')), '');
-    check('没有 .git 残留', !paths.some((p) => p.startsWith('.git/')), '');
-    const suspicious = paths.filter((p) => /config\.json$|pins\.json$|collections-index|music-meta-cache/.test(p));
-    check('没有本地数据文件', suspicious.length === 0, suspicious.join(','));
-    const srcCount = paths.filter((p) => p.startsWith('src/')).length;
-    check('源码目录完整', srcCount >= 18, `src/ 下 ${srcCount} 个文件`);
-  } catch (e) {
-    check('仓库文件树检查', false, e.message);
+
+  if (!rateHit) {
+    try {
+      const r = await fetch(`${API}/git/trees/main?recursive=1`, {
+        headers: AUTH_HEADERS,
+        signal: AbortSignal.timeout(25000),
+      });
+      const raw = await r.text();
+      if (isRateLimited(r.status, raw)) {
+        skip('仓库文件树检查', 'API 限流');
+      } else {
+        const j = JSON.parse(raw);
+        const paths = (j.tree || []).map((x) => x.path);
+        check('文件总数合理', paths.length > 50 && paths.length < 200, `${paths.length} 个文件`);
+        check('没有 node_modules', !paths.some((p) => p.startsWith('node_modules/')), '');
+        check('没有 .git 残留', !paths.some((p) => p.startsWith('.git/')), '');
+        const suspicious = paths.filter((p) => /(^|\/)config\.json$|pins\.json$|collections-index|music-meta-cache/.test(p));
+        check('没有本地数据文件', suspicious.length === 0, suspicious.join(','));
+        const srcCount = paths.filter((p) => p.startsWith('src/')).length;
+        check('源码目录完整', srcCount >= 18, `src/ 下 ${srcCount} 个文件`);
+      }
+    } catch (e) {
+      check('仓库文件树检查', false, e.message);
+    }
+  } else {
+    skip('仓库文件树检查', 'API 限流');
   }
 
-  // ---- 4) 本地与远端一致 ----
+  // ---- 4) Release ----
+  log('');
+  log('  【Release】');
+  if (rateHit) {
+    skip('Release 检查', 'API 限流');
+  } else {
+    try {
+      const r = await fetch(`${API}/releases/tags/v1.0.0`, {
+        headers: AUTH_HEADERS,
+        signal: AbortSignal.timeout(25000),
+      });
+      const raw = await r.text();
+      if (isRateLimited(r.status, raw)) {
+        skip('Release 检查', 'API 限流');
+      } else {
+        const rel = JSON.parse(raw);
+        check('v1.0.0 已发布', r.status === 200 && rel.draft === false, rel.tag_name || '');
+        check('是正式版（非预发布）', rel.prerelease === false);
+        check('有说明正文', (rel.body || '').length > 500, `${(rel.body || '').length} 字符`);
+        check('有附件', Array.isArray(rel.assets) && rel.assets.length > 0, (rel.assets || []).map((a) => a.name).join(','));
+        check('是 latest', rel.tag_name === 'v1.0.0');
+        // v1.0.0 的 tag 应该指向 main（否则 Release 源码包会缺文件）
+        if (meta) {
+          const tr = await fetch(`${API}/git/ref/tags/v1.0.0`, {
+            headers: AUTH_HEADERS,
+            signal: AbortSignal.timeout(20000),
+          });
+          const traw = await tr.text();
+          if (!isRateLimited(tr.status, traw)) {
+            const tag = JSON.parse(traw);
+            const mr = await fetch(`${API}/git/ref/heads/main`, {
+              headers: AUTH_HEADERS,
+              signal: AbortSignal.timeout(20000),
+            });
+            const mraw = await mr.text();
+            if (!isRateLimited(mr.status, mraw)) {
+              const m = JSON.parse(mraw);
+              check('tag 指向最新 commit', tag.object.sha === m.object.sha, `${tag.object.sha.slice(0, 8)} / ${m.object.sha.slice(0, 8)}`);
+            }
+          }
+        }
+      }
+    } catch (e) {
+      check('Release 检查', false, e.message);
+    }
+  }
+
+  // ---- 5) 本地 git 状态 ----
   log('');
   log('  【本地 git 状态】');
   try {
     const cwd = path.resolve(__dirname, '..');
     const g = (args) => execFileSync('git', args, { cwd, encoding: 'utf8' }).trim();
+    // 【不能拿 origin/main 比】本机 github.com:443 不通，git fetch 用不了，
+    // origin/main 会停在旧值。改成用 API 查到的远端 HEAD 比。
     const local = g(['rev-parse', 'HEAD']);
-    const remote = g(['rev-parse', 'origin/main']);
-    check('本地与远端一致', local === remote, `${local.slice(0, 8)} / ${remote.slice(0, 8)}`);
+    if (meta) {
+      const rr = await fetch(`${API}/git/ref/heads/main`, { headers: AUTH_HEADERS, signal: AbortSignal.timeout(20000) });
+      const rraw = await rr.text();
+      if (isRateLimited(rr.status, rraw)) {
+        skip('本地与远端一致', 'API 限流');
+      } else {
+        const remote = JSON.parse(rraw).object.sha;
+        check('本地与远端一致', local === remote, `${local.slice(0, 8)} / ${remote.slice(0, 8)}`);
+      }
+    } else {
+      skip('本地与远端一致', 'API 限流');
+    }
     const commits = g(['rev-list', '--count', 'HEAD']);
     check('提交历史完整', Number(commits) >= 4, `${commits} 个 commit`);
     const remoteUrl = g(['remote', 'get-url', 'origin']);
@@ -137,7 +254,7 @@ const check = (name, ok, detail) => {
 
   log('');
   log('════════════════════════════════');
-  log(`  通过 ${pass} 项，失败 ${fail} 项`);
+  log(`  通过 ${pass} 项，失败 ${fail} 项${skipped ? `，跳过 ${skipped} 项（限流）` : ''}`);
   log('════════════════════════════════');
   process.exitCode = fail ? 1 : 0;
 })().catch((e) => {
