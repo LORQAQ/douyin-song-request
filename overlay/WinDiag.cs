@@ -131,6 +131,7 @@ public class WinDiag
         Console.WriteLine("    尺寸        : " + (rr.R - rr.L) + "x" + (rr.B - rr.T));
         Console.WriteLine("    可见        : " + (IsWindowVisible(found) ? "是" : "否 ← 会被过滤"));
         Console.WriteLine("    最小化      : " + (IsIconic(found) ? "是 ← 会被过滤" : "否"));
+        Console.WriteLine("    置顶(TOPTOP) : " + ((exs & 0x00000008) != 0 ? "是（会一直浮在最上面，桌面上总能看到）" : "否（可以被别的窗口盖住 → --behind 模式）"));
         Console.WriteLine("    有父窗口    : " + (GetParent(found) != IntPtr.Zero ? "是 ← 可能被当作子窗口忽略" : "否"));
         Console.WriteLine("    Owner 窗口  : " + (GetWindow(found, GW_OWNER) != IntPtr.Zero ? "有 ← 可能被当作对话框忽略" : "无"));
         Console.WriteLine("    WS_VISIBLE  : " + ((style & 0x10000000) != 0 ? "有" : "无"));

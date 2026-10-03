@@ -23,7 +23,8 @@ namespace SongOverlay
     ///   3) 零运行时依赖：编译成单个 exe，不用装 Electron / 不用开浏览器。
     ///
     /// 用法：
-    ///   SongOverlay.exe [--port 8787] [--max 6] [--left 40] [--top -1] [--fixed] [--no-taskbar]
+    ///   SongOverlay.exe [--port 8787] [--max 6] [--left 40] [--top -1]
+    ///                   [--fixed] [--no-taskbar] [--behind]
     ///   快捷键：Ctrl+Alt+T 切换鼠标穿透 / Ctrl+Alt+M 关穿透 / Ctrl+Alt+Q 退出
     /// </summary>
     internal static class Program
@@ -48,6 +49,17 @@ namespace SongOverlay
         /// </summary>
         public static bool NoTaskbar = false;
 
+        /// <summary>
+        /// 是否"藏在后面"模式：不强制置顶，让别的窗口能盖住它。
+        ///
+        /// 用途：主播不想在自己桌面上看到歌单窗，但直播伴侣需要抓到它。
+        /// 用 --behind 启动后，把直播伴侣全屏显示就能把悬浮窗完全盖住 ——
+        /// 能不能被采集到，取决于直播伴侣用的是哪种捕获方式：
+        ///   · Windows Graphics Capture → 被遮挡也能抓到，需求就实现了
+        ///   · 老的 BitBlt            → 抓到的是遮挡物，此路不通
+        /// </summary>
+        public static bool Behind = false;
+
         [STAThread]
         private static void Main(string[] args)
         {
@@ -61,6 +73,7 @@ namespace SongOverlay
                 else if (a == "--top" && v != null) TopPos = int.Parse(v);
                 else if (a == "--fixed") ClickThrough = false;
                 else if (a == "--no-taskbar") NoTaskbar = true;
+                else if (a == "--behind") Behind = true;
             }
 
             Application.EnableVisualStyles();
@@ -183,6 +196,17 @@ namespace SongOverlay
         private static extern int GetWindowLong(IntPtr hWnd, int nIndex);
 
         [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
+        private static extern bool SetWindowPos(
+            IntPtr hWnd,
+            IntPtr hWndInsertAfter,
+            int X,
+            int Y,
+            int cx,
+            int cy,
+            uint uFlags
+        );
+
+        [System.Runtime.InteropServices.DllImport("user32.dll", SetLastError = true)]
         private static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
 
         [System.Runtime.InteropServices.DllImport("user32.dll")]
@@ -212,7 +236,10 @@ namespace SongOverlay
             // ShowInTaskbar=false 会让 WinForms 建一个隐藏 Owner 窗口，
             // 而"有 Owner 的顶层窗口"常被采集软件当成对话框忽略掉。
             ShowInTaskbar = !Program.NoTaskbar;
-            TopMost = true;
+            // 【--behind：不置顶】让它能被别的窗口盖住，从而在桌面上"看不见它"。
+            // 能不能成功取决于直播伴侣的捕获方式：如果是 Windows Graphics Capture，
+            // 窗口被完全遮住也照样抓得到；如果是老的 BitBlt，就只能抓到遮挡物。
+            TopMost = !Program.Behind;
             StartPosition = FormStartPosition.Manual;
             Text = "歌单悬浮窗";
             BackColor = Color.FromArgb(12, 16, 24);
@@ -280,7 +307,30 @@ namespace SongOverlay
                 // 这是「每次都要重新摆位」这个痛点的正解。
                 LocationChanged += (s2, e2) => { if (Visible) PosStore.Save(Left, Top); };
                 Resize += (s2, e2) => { if (Visible) PosStore.Save(Left, Top); };
+
+                // 【--behind：主动沉到窗口栈最底部】
+                // 只把 TopMost 关掉还不够 —— 新窗口默认会浮在同级窗口上面。
+                // 用 HWND_BOTTOM 直接压到底，这样直播伴侣一全屏就把它完全盖住，
+                // 主播桌面上看不到它，而窗口本身仍然存在（可以被窗口捕获找到）。
+                if (Program.Behind) SinkToBottom();
             };
+        }
+
+        private const uint SWP_NOSIZE = 0x0001;
+        private const uint SWP_NOMOVE = 0x0002;
+        private const uint SWP_NOACTIVATE = 0x0010;
+        private static readonly IntPtr HWND_BOTTOM = new IntPtr(1);
+
+        private void SinkToBottom()
+        {
+            try
+            {
+                SetWindowPos(Handle, HWND_BOTTOM, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE);
+            }
+            catch
+            {
+                /* 失败也不影响其它功能 */
+            }
         }
 
         /// <summary>把窗口拉回屏幕可见区域，避免出现"打开了但看不见"</summary>

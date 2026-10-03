@@ -50,7 +50,8 @@
     "watch": "node scripts/watch.js",
     "pin": "node scripts/make-pins.js",
     "index": "node scripts/index-collections.js",
-    "overlay:capture": "overlay\\\\bin\\\\SongOverlay.exe --fixed"
+    "overlay:capture": "overlay\\bin\\SongOverlay.exe --fixed",
+    "overlay:hidden": "overlay\\bin\\SongOverlay.exe --behind --fixed"
   },
   "dependencies": {
     "ws": "^8.18.0"
