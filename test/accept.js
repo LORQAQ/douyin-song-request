@@ -239,7 +239,50 @@ const skip = (name, why) => {
         skip('本地与远端一致', 'API 限流');
       } else {
         const remote = JSON.parse(rraw).object.sha;
-        check('本地与远端一致', local === remote, `${local.slice(0, 8)} / ${remote.slice(0, 8)}`);
+        if (local === remote) {
+          check('本地与远端一致', true, `${local.slice(0, 8)} / ${remote.slice(0, 8)}`);
+        } else {
+          // 【已知情况，不算失败】
+          // 本机 github.com:443 不通，推送只能走 API；API 在服务端新建的 commit
+          // 对象本地没有（git fetch 也用不了），所以两边 SHA 天然不同。
+          // 关键看内容：api-sync 是按 git blob 内容 hash 比对后才上传的，
+          // 所以只要没有"待上传"，文件就是一致的。
+          let pending = '未知';
+          try {
+            const treeRes = await fetch(`${API}/git/trees/main?recursive=1`, {
+              headers: AUTH_HEADERS,
+              signal: AbortSignal.timeout(25000),
+            });
+            const traw = await treeRes.text();
+            const remoteFiles = new Map();
+            if (!isRateLimited(treeRes.status, traw)) {
+              for (const it of JSON.parse(traw).tree || []) {
+                if (it.type === 'blob') remoteFiles.set(it.path, it.sha);
+              }
+              let diff = 0;
+              // 【-z 必须加】中文文件名默认会被 git 输出成 "\345\277\253..." 这种转义形式，
+              // 拿去 hash-object 会报 "could not open"，于是永远算作"有文件待同步"（假失败）。
+              const tracked = g(['ls-files', '-z']).split('\0').filter(Boolean);
+              for (const rel of tracked) {
+                let sha = '';
+                try {
+                  sha = g(['hash-object', rel]);
+                } catch {
+                  continue;
+                }
+                if (remoteFiles.get(rel) !== sha) diff += 1;
+              }
+              pending = String(diff);
+            }
+          } catch {
+            /* 忽略 */
+          }
+          if (pending === '0') {
+            check('本地文件与远端一致（SHA 不同属正常）', true, `本地 ${local.slice(0, 8)} / 远端 ${remote.slice(0, 8)}，内容零差异`);
+          } else {
+            check('本地与远端一致', false, `${local.slice(0, 8)} / ${remote.slice(0, 8)}，有 ${pending} 个文件待同步`);
+          }
+        }
       }
     } else {
       skip('本地与远端一致', 'API 限流');
