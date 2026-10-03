@@ -1093,6 +1093,16 @@ const testConfig = {
     console.log(`  ✗ 批处理检查整体失败：${err.message}`);
   }
 
+  // ---- 选歌匹配规则（非中文歌踩过一串坑）----
+  console.log('\n【选歌匹配规则】非中文歌 + 索引可信度');
+  try {
+    const registerMatching = require('./regression-matching');
+    registerMatching({ test, assert });
+  } catch (err) {
+    failed += 1;
+    console.log(`  ✗ 匹配规则测试整体失败：${err.message}`);
+  }
+
   console.log(`\n结果：通过 ${passed} 项，失败 ${failed} 项\n`);
 
   // 【不能用 process.exit()】

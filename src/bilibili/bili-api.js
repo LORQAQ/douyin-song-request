@@ -119,6 +119,129 @@ function normalizeForCompare(s) {
 }
 
 /**
+ * 判断一个"歌手名"其实是唱片公司/发行方，而不是演唱者。
+ *
+ * 为什么需要：本地索引里有「索尼音乐中国」「环球音乐中国」「华纳音乐中国」
+ * 这类**版权方**的官方合辑。它们合法收录了别人的歌，但按字符串包含判断
+ * 会被当成"歌手匹配"，从而拿到最高分。
+ * 实测：「晴天」精确键里只有索尼音乐中国那一条，结果放的是它的合辑。
+ *
+ * 这类条目不是不能用（官方合辑音质通常很好），只是**不该享受"歌手本人投稿"的加分**。
+ *
+ * @param {string} name 待判断的名字（小写）
+ */
+const LABEL_PATTERN =
+  /(索尼音乐|环球音乐|华纳音乐|太合音乐|相信音乐|滚石唱片|杰威尔|咪咕音乐|摩登天空|英皇娱乐|天娱传媒|乐华娱乐|时代峰峻|华研国际|福茂唱片|种子音乐|丰华唱片|音乐中国|典藏音乐|无损音乐|音乐分享|music\s*(china|entertainment)|records?$|唱片公司|音乐公司)/i;
+
+function isLabelOrDistributor(name) {
+  return LABEL_PATTERN.test(String(name || ''));
+}
+
+/**
+ * 判断一条「合集」条目的可信度加成，用来区分"歌手本人的合集"和"别人的杂锦/现场"。
+ *
+ * 【为什么需要】原来凡是命中合集就一律给最高分，结果实测踩了一串坑：
+ *   「晴天」→ 【神仙打架】华语乐坛150首（第三方杂锦），
+ *             它 269s 恰好比周杰伦本人的 270s 更接近平台时长，于是一路胜出
+ *   「Gangnam Style」→ PSY《2026 SUMMER SWAG》**Fancam合集**（演唱会饭拍）
+ *   「残酷な天使のテーゼ」→ 零基础**学唱**教程
+ * 这些都不是"录音室原版"，不该拿最高分。
+ *
+ * @param {string} collectionTitle 合集名
+ * @param {string} partTitle       分P标题
+ * @param {string} owner           UP 主名
+ * @param {string} artist          平台给的原唱名
+ * @returns {{bonus:number, notes:string[], reject:boolean}}
+ */
+function collectionTrust(collectionTitle, partTitle, owner, artist) {
+  const coll = `${collectionTitle || ''} ${partTitle || ''}`.toLowerCase();
+  const ownerL = String(owner || '').toLowerCase();
+  const artistL = String(artist || '').toLowerCase();
+  const notes = [];
+
+  // ① 教学/翻唱/伴奏类：直接不要
+  if (/学唱|教程|教学|翻唱|cover|伴奏|instrumental|吉他谱|钢琴谱|简谱|口琴|尤克里里/.test(coll)) {
+    return { bonus: 0, notes: ['教学或翻唱，排除'], reject: true };
+  }
+
+  let bonus = 0;
+
+  // ② 现场/饭拍/演唱会 —— 不是录音室原版
+  if (/fancam|饭拍|演唱会|巡演|concert|音乐节|现场/.test(coll)) {
+    bonus -= 500;
+    notes.push('现场/饭拍');
+  }
+
+  // ③ 第三方杂锦合集（"神仙打架""盘点"这类别人拼的）。
+  //    实测「夜曲」：标题精确键命中了【神仙打架】华语乐坛150首合集，拿了 900 分，
+  //    把周杰伦本人的版本压下去了。这类合集音质参差不齐，也不该享受"歌手合集"待遇。
+  if (/神仙打架|盘点|合集汇总|杂锦|串烧|排行榜|top\d|歌单推荐|必听|精选集/.test(String(collectionTitle || ''))) {
+    bonus -= 200;
+    notes.push('第三方杂锦');
+  }
+
+  // ④ UP 主就是这位歌手本人 → 最可信
+  if (artistL && ownerL && (ownerL.includes(artistL) || artistL.includes(ownerL))) {
+    bonus += 150;
+    notes.push('歌手本人投稿');
+  }
+
+  return { bonus, notes, reject: false };
+}
+
+/**
+ * 判断两个归一化标题做「包含匹配」是否**安全**。
+ *
+ * 【为什么需要这个】原来直接 `a.includes(b) || b.includes(a)` 就当成命中，
+ * 在非中文歌上错得离谱。实测：
+ *   「Shape of You」归一化成 `shapeofyou`，
+ *   而某个合集里有个分P标题是「【You】」→ 归一化成 `you`，
+ *   于是 `shapeofyou.includes('you')` 为真 —— 点 Ed Sheeran 的歌，
+ *   系统放了一首张敬轩的 live 合集里那一分P。
+ *   同理「Faded」命中「20180528Faded」这类直播合集分P。
+ *
+ * 【为什么中文和拉丁要分开处理】两者的"信息密度"完全不同：
+ *   · 中文一个字就是一个音节、信息量大 —— 「晴天」两个字已经很独特，
+ *     而且常见写法是「周杰伦晴天」「晴天 周杰伦」，覆盖率天然很低。
+ *   · 拉丁单个单词很短且到处出现 —— `you` `the` `on` 这种当子串必然误伤。
+ * 所以：中文查覆盖率下限放宽（0.4），拉丁要求严格（长度≥4 且覆盖≥0.6）。
+ */
+function isSafeSubstringMatch(a, b) {
+  if (!a || !b) return false;
+  if (a === b) return true;
+
+  const shorter = a.length <= b.length ? a : b;
+  const longer = a.length <= b.length ? b : a;
+  if (!longer.includes(shorter)) return false;
+
+  const cjkOnly = /^[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]+$/.test(shorter);
+  // 注意：要在**两边**找中日韩字符，不能只看短串。
+  // 「Lemon」vs「Lemon米津玄师」里短串是纯拉丁，但长串带中文 ——
+  // 这正是「英文歌名 + 中文歌手名」的常见写法，该按混合规则放宽。
+  const hasCJK =
+    /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(a) ||
+    /[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(b);
+
+  // ① 纯中日韩：2 个字就够独特，覆盖 40% 即可
+  //    （常见写法「周杰伦晴天」，覆盖率天然很低）
+  if (cjkOnly) {
+    if (shorter.length < 2) return false;
+    return shorter.length / longer.length >= 0.4;
+  }
+
+  // ② 混合（拉丁 + 中日韩）：典型是「Lemon米津玄师」这种「歌名+歌手名」写法。
+  //    有中文部分兜底，误伤风险低，放宽到 35%。
+  if (hasCJK) {
+    return shorter.length / longer.length >= 0.35;
+  }
+
+  // ③ 纯拉丁：**必须严格**。单个英文单词又短又常见，
+  //    `you` 命中 `shapeofyou`、`faded` 命中 `20180528faded` 都是这么来的。
+  if (shorter.length < 4) return false;
+  return shorter.length / longer.length >= 0.6;
+}
+
+/**
  * 「二创 / 非原唱」识别。
  *
  * 主播要的是**第一手**（原唱/官方），所以这类一律重罚并优先排除：
@@ -1004,8 +1127,12 @@ class BilibiliClient {
       const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
       const artists = raw.artists || {};
       let count = 0;
-      const map = new Map(); // 归一化标题 → [{bvid,cid,page,title,duration,artist}]
+      const map = new Map(); // 归一化标题 → [{bvid,cid,page,title,duration,artist,collectionTitle}]
       for (const [artist, info] of Object.entries(artists)) {
+        // 这位歌手名下的合集列表（用来给每个条目补上「它属于哪个合集」）。
+        // 不补的话，后面判断"第三方杂锦合集"时拿不到合集名，
+        // 实测「晴天」就是这么被【神仙打架】杂锦合集骗走的。
+        const collTitle = String(info.collectionTitle || info.collection || info.name || artist || '');
         for (const v of info.videos || []) {
           if (!v || !v.bvid || !v.title) continue;
           // 【时长过滤】索引里可能混进「整段合辑」（实测有 39788 秒的 P1），
@@ -1015,7 +1142,7 @@ class BilibiliClient {
           const norm = normalizeForCompare(normalizeSongText(String(v.title)));
           if (!norm || norm.length < 2) continue;
           if (!map.has(norm)) map.set(norm, []);
-          map.get(norm).push({ ...v, artist });
+          map.get(norm).push({ ...v, artist, collectionTitle: v.collectionTitle || collTitle });
           count += 1;
         }
       }
@@ -1046,16 +1173,30 @@ class BilibiliClient {
 
     // ① 精确标题命中（O(1)）
     let cands = this._localIndexMap.get(want);
-    // ② 退化为「标题包含歌名」
+    // ② 退化为「标题包含歌名」——但要**严格**，不能只要沾边就算命中
     if (!cands || !cands.length) {
       cands = [];
       for (const [norm, list] of this._localIndexMap) {
-        if (norm.includes(want) || want.includes(norm)) cands.push(...list);
+        if (norm === want) {
+          cands.push(...list);
+        } else if (isSafeSubstringMatch(norm, want)) {
+          cands.push(...list);
+        }
         if (cands.length > 60) break;
       }
     }
     if (!cands || !cands.length) return null;
 
+    /**
+     * 【命中置信度】精确命中给满分，模糊命中降级。
+     *
+     * 为什么：原来只要索引里沾边就一律给 1300 分，比正常候选（200~265）高 5 倍，
+     * 会**碾压一切**。而模糊命中并不保证是原版录音 —— 实测踩过：
+     *   「Lemon」→ 命中「米津玄师歌曲音乐合集 · P1 Lemon」，但那条可能是 live/翻唱
+     *   「Gangnam Style」→ 命中「PSY Fancam合集 · P20 강남스타일」（现场饭拍）
+     * 精确命中（标题就是歌名，来自系统预建的歌手合集）才是可信的。
+     */
+    const isExactHit = this._localIndexMap.has(want) && this._localIndexMap.get(want) === cands;
     // 【歌手过滤】索引是「歌手 → 他的合集」，所以条目的 artist 字段就是归属歌手。
     // 实测踩过的坑：
     //   「孤勇者」（陈奕迅）命中了「腾格尔歌曲音乐合集」里的同名条目
@@ -1066,15 +1207,28 @@ class BilibiliClient {
     const matchesArtist = (v) => {
       if (!artist) return true;
       const a = String(v.artist || '').toLowerCase();
+      // 【唱片公司 ≠ 歌手】索引里有「索尼音乐中国」「环球音乐中国」这类
+      // **版权方/发行方**的官方合辑。它们收录了别人的歌，
+      // 但按字符串判断会被当成"歌手对得上"。
+      // 实测：「晴天」精确键 `晴天` 只有索尼音乐中国那一条（269s，正好等于平台时长），
+      // 于是它拿了最高分，放出来的是索尼的合辑页而不是周杰伦的原版。
+      if (isLabelOrDistributor(a)) return false;
       return a.includes(artist) || artist.includes(a);
     };
 
-    // 时长最接近 + 歌手匹配 双重排序
+    // 时长最接近 + 歌手匹配 + **合集可信度** 三重排序
     const scored = cands
       .map((v) => {
         const diff = primary ? Math.abs(Number(v.duration) - primary) : 0;
-        return { v, diff, artistOk: matchesArtist(v) };
+        // 【合集可信度】索引条目里也混着「第三方杂锦合集」「现场饭拍」，
+        // 实测「晴天」：周杰伦本人 270s，别人的【神仙打架】杂锦合集 269s，
+        // 平台时长就是 269s → 杂锦合集靠"时长更接近"赢了。必须把可信度算进去。
+        // 注意要把**合集名**传进去（v.collectionTitle），只看标题判断不出是不是杂锦。
+        const trust = collectionTrust(v.collectionTitle, v.title, v.artist, artist);
+        return { v, diff, artistOk: matchesArtist(v), trust };
       })
+      // 教学/翻唱类合集直接排除
+      .filter((x) => !x.trust.reject)
       // 单曲时长过滤（索引已过滤，这里再兜一层；同时排除明显不对的）
       .filter((x) => Number(x.v.duration) >= 60 && Number(x.v.duration) <= 420)
       // 【重要】平台时长查不到时（酷狗偶尔限流），不能因为 primary=0 就放弃时长约束，
@@ -1082,16 +1236,58 @@ class BilibiliClient {
       // 兜底用「常见歌曲时长」当约束：中文流行歌极少超过 8 分钟。
       .filter((x) => (primary ? x.diff <= 30 : Number(x.v.duration) <= 480))
       .sort((a, b) => {
-        // ① 歌手匹配的排前面
+        // ① 可信度高的排前面（歌手本人合集 > 普通 > 杂锦/现场）
+        if (a.trust.bonus !== b.trust.bonus) return b.trust.bonus - a.trust.bonus;
+        // ② 歌手匹配的排前面
         if (a.artistOk !== b.artistOk) return a.artistOk ? -1 : 1;
-        // ② 时长最接近的排前面
+        // ③ 时长最接近的排前面
         return a.diff - b.diff;
       });
 
     if (!scored.length) return null;
     const hit = scored[0].v;
+    const artistOk = scored[0].artistOk;
+
+    /**
+     * 【按置信度给分】
+     *
+     * 精确命中（索引里标题归一化后 == 歌名）＋ 歌手对得上 → 最可信，给高分。
+     * 模糊命中、或歌手对不上 → 只给「略高于普通候选」的分，
+     * 让它**参与竞争但不碾压**，最终由后面的 B站核验/时长门槛来决定。
+     *
+     * 原来一律 1300 分，导致「别的歌手的合集里恰好有这首歌」也能碾压正确答案。
+     */
+    let score;
+    let confLabel;
+    const thirdParty = (scored[0].trust.notes || []).includes('第三方杂锦');
+    if (isExactHit && artistOk) {
+      score = 1300;
+      confLabel = '精确命中';
+    } else if (isExactHit) {
+      /**
+       * 【标题精确，但没有"歌手本人"背书】给**负分**。
+       *
+       * 为什么是负分而不是"中等的 300 分"：
+       *   300 分会**压死搜索结果**。实测「夜曲」：
+       *   索引里记的是「索尼音乐中国 · 夜曲 · 227s」，但那个 bvid 实际是
+       *   「典藏音乐」发的【神仙打架】杂锦合集 P2；搜索路径找到的候选分数
+       *   都在 100~250 之间，于是这个 300 分的错误条目一路胜出。
+       *
+       * 给负分意味着：**只有在实在没有别的选择时才会用它**（有兜底）。
+       * 归属歌手字段本身就是自动抓取的，有噪声，不该凭它拿任何优势。
+       */
+      score = -500;
+      confLabel = thirdParty ? '第三方杂锦合集·降权' : '标题精确但归属非歌手本人·降权';
+    } else if (artistOk) {
+      score = 420; // 模糊命中但歌手对
+      confLabel = '模糊命中（歌手相符）';
+    } else {
+      score = 220; // 都不可靠
+      confLabel = '模糊命中（歌手也不符）';
+    }
+
     this.logger.info(
-      `📖 本地索引命中「${hit.title}」（${hit.artist} · ${hit.duration}s，差${scored[0].diff}s${scored[0].artistOk ? '' : ' ⚠️歌手不符'}）`
+      `📖 本地索引${confLabel}「${hit.title}」（${hit.artist} · ${hit.duration}s，差${scored[0].diff}s）→ ${score}分`
     );
     return {
       bvid: hit.bvid,
@@ -1106,9 +1302,9 @@ class BilibiliClient {
       play: 0,
       pic: '',
       description: '',
-      score: 1300, // 本地索引命中，优先级最高
-      reasons: [`本地合集索引命中（${hit.artist}）`],
-      titleMatch: 'exact',
+      score,
+      reasons: [`本地合集索引命中（${hit.artist}·${confLabel}）`],
+      titleMatch: isExactHit ? 'exact' : 'partial',
       instrumental: false,
       derivative: false,
       firstHand: true,
@@ -1751,35 +1947,55 @@ class BilibiliClient {
     }
 
     // 【第零步之二·本地合集索引】在预建好的合集曲库里找这首歌。
-    // 命中就**完全不用访问B站搜索** —— 不受搜索结果波动影响，速度也是 0 开销。
-    // 这是「让热门歌每次结果都一样」的核心机制。
-    // 先查音乐平台拿原曲时长，这样索引里能挑到时长最对的那个版本。
+    //
+    // 【重要设计变更】原来命中就**立刻 return**，完全不走搜索。
+    // 问题是索引只能按标题匹配，判不出「这条到底是不是原版录音」——
+    // 实测「晴天」：索引里精确键 `晴天` 只有唱片公司合辑那一条，于是被它占死，
+    // 而搜索路径本来能给出周杰伦本人的版本（1300 分）。
+    //
+    // 所以改成：**索引只作为一个高分候选，和搜索结果一起比**。
+    // 索引候选会带上它自己的置信度分数（精确+歌手相符=1300，仅标题精确=900…），
+    // 谁分高谁上。这样既保留了"热门歌结果稳定"，又不会让次优的索引条目霸占位置。
+    //
+    // 代价：索引命中时也要跑一次搜索（约 0.5~3 秒）。这是值得的。
+    let localCandidate = null;
     try {
       const quickMeta = await this.lookupOriginal(song, options);
       const local = this.findInLocalIndex(song, quickMeta || {});
       if (local) {
-        // 用 pickByVideo 把 bvid+page 解析成可播放条目（和固定答案同一条路径）
         const resolved = await this.pickByVideo({ bvid: local.bvid, page: local.page }).catch((err) => {
           this.logger.debug(`本地索引 ${local.bvid} 解析失败：${err.message}`);
           return null;
         });
         if (resolved) {
-          this.logger.info(`📖 本地索引直接命中：${resolved.title}`);
-          return {
-            ok: true,
-            song,
-            pick: {
-              ...resolved,
-              reasons: [`本地合集索引（${local.owner}）`],
-              score: 1300,
-              firstHand: true,
-              fromCollection: true,
-            },
-            search: { candidates: [resolved], song, query: song },
-            meta: quickMeta || null,
-            fromLocalIndex: true,
-            alternatives: [],
+          const localScore = Number(local.score) || 0;
+          localCandidate = {
+            ...resolved,
+            reasons: local.reasons || [`本地合集索引（${local.owner}）`],
+            score: localScore,
+            firstHand: true,
+            fromCollection: true,
+            titleMatch: local.titleMatch,
           };
+          this.logger.info(
+            `📖 本地索引候选：${resolved.title}（${(local.reasons && local.reasons[0]) || ''}·${localScore}分）`
+          );
+
+          // 只有**高置信度**的索引命中才值得直接采用（省掉一次搜索）：
+          // 标题精确 + 歌手对得上 = 基本可以确定是原版录音。
+          if (localScore >= 1300) {
+            this.logger.info('   ↳ 置信度足够高，直接采用');
+            return {
+              ok: true,
+              song,
+              pick: localCandidate,
+              search: { candidates: [localCandidate], song, query: song },
+              meta: quickMeta || null,
+              fromLocalIndex: true,
+              alternatives: [],
+            };
+          }
+          this.logger.info(`   ↳ 置信度一般（${localScore}分），拿去和搜索结果比较`);
         }
       }
     } catch (err) {
@@ -1923,6 +2139,51 @@ class BilibiliClient {
     // （原来这里还有个 findInArtistCollection，和它做同一件事，
     //   实测重复调用让点歌慢了 1~2 秒，而且结果一样，所以删掉了。）
 
+    // 【第三步之末·把本地索引候选并进候选池一起比】
+    // 索引候选带着自己的置信度分数（精确+歌手相符=1300 / 唱片公司合辑=750 …），
+    // 让它和搜索出来的候选公平竞争，而不是"命中就独占"。
+    //
+    // 【但必须先过一遍 B站核验】索引候选只经过 pickByVideo 解析，
+    // 没读过 B站的 tag/简介，也没做时长门槛 —— 直接塞进候选池的话，
+    // 一个"标题对但其实是别人翻唱/杂锦"的条目会凭高分压死正确结果。
+    // 实测「夜曲」就是这么被【神仙打架】杂锦合集占住的。
+    if (localCandidate && search.candidates) {
+      try {
+        const verified = await this._verifyWithBiliFacts(
+          { candidates: [localCandidate], song, query: song },
+          meta
+        );
+        const vc = (verified.candidates || [])[0];
+        if (vc) {
+          // 核验可能给它降分（识别出是二创/翻唱/时长不符）
+          if (Number(vc.score) !== Number(localCandidate.score)) {
+            this.logger.info(
+              `🔎 索引候选经 B站核验：${localCandidate.score} → ${Math.round(vc.score)}分` +
+                (vc.reasons && vc.reasons.length ? '（' + vc.reasons.slice(-2).join('/') + '）' : '')
+            );
+          }
+          localCandidate = vc;
+        }
+      } catch (err) {
+        this.logger.debug(`索引候选核验失败（忽略）：${err.message}`);
+      }
+
+      const dup = search.candidates.some(
+        (c) => c.bvid === localCandidate.bvid && Number(c.page || 1) === Number(localCandidate.page || 1)
+      );
+      if (!dup) {
+        search = {
+          ...search,
+          candidates: [...search.candidates, localCandidate].sort((a, b) => (b.score || 0) - (a.score || 0)),
+        };
+        this.logger.info(
+          `🔀 索引候选加入比较（${Math.round(localCandidate.score)}分），当前最高分：${Math.round(
+            (search.candidates[0] || {}).score || 0
+          )}`
+        );
+      }
+    }
+
     if (!search.candidates.length) {
       // 再试一次「去掉歌手前缀」的写法：「周杰伦的晴天」->「晴天」
       const stripped = song.replace(/^[\u4e00-\u9fa5A-Za-z]{1,6}的/, '').trim();
@@ -1934,6 +2195,21 @@ class BilibiliClient {
           if (meta) search = this._applyOriginalMeta(search, meta);
         }
       }
+    }
+    // 搜索一条都没有时，退回本地索引候选（总比没有强）。
+    // 注意：低置信度的索引候选分数是负的，正常情况下会排在搜索结果后面；
+    // 只有这里"搜索完全没结果"时才会兜底用它。
+    if (!search.candidates.length && localCandidate) {
+      this.logger.info(`搜索无结果，退回本地索引候选（置信度较低，仅供参考）`);
+      return {
+        ok: true,
+        song,
+        pick: localCandidate,
+        search: { candidates: [localCandidate], song, query: song },
+        meta,
+        fromLocalIndex: true,
+        alternatives: [],
+      };
     }
     if (!search.candidates.length) {
       return { ok: false, song, reason: search.error || '没有找到合适的视频', search, meta };
@@ -2371,21 +2647,66 @@ class BilibiliClient {
     }
     if (!candidates.length) return null;
 
-    // 歌手名校验 + 时长校验
+    // 歌手名校验 + 时长校验 + **合集质量校验**
     const hits = [];
     for (const v of candidates) {
       const hay = `${v.part || ''} ${v.collectionTitle || ''} ${v.owner || ''}`.toLowerCase();
       if (!hay.includes(artist.toLowerCase())) continue;
       const diff = primary ? Math.abs(Number(v.duration) - primary) : 0;
       if (primary && diff > 25) continue;
-      hits.push({ ...v, diff });
+
+      /**
+       * 【合集质量】不是所有"合集"都适合当原版来源。
+       *
+       * 实测踩过的坑（全都是硬编码 1100 分碾压正确答案）：
+       *   「Gangnam Style」→ PSY《2026 SUMMER SWAG》**Fancam合集** P20   ← 演唱会饭拍
+       *   「残酷な天使のテーゼ」→ 零基础**学唱**教程                      ← 教学视频
+       *   「晴天」→ 【神仙打架】华语乐坛150首歌曲合集（别人的杂锦合集）    ← 不是歌手本人的
+       *
+       * 所以这里给每个命中算一个"可信度加成"，而不是一律 1100 分。
+       */
+      const coll = `${v.collectionTitle || ''} ${v.part || ''}`.toLowerCase();
+      let bonus = 0;
+      const notes = [];
+
+      // ① 现场/饭拍/演唱会 —— 不是录音室原版，重罚
+      if (/fancam|饭拍|演唱会|巡演|concert|live\s*(现场|版)|音乐节|fm\b/.test(coll)) {
+        bonus -= 500;
+        notes.push('现场/饭拍');
+      }
+      // ② 教学/翻唱/伴奏类 —— 直接排除
+      if (/学唱|教程|教学|翻唱|cover|伴奏|instrumental|吉他谱|钢琴谱|简谱/.test(coll)) {
+        continue;
+      }
+      // ③ 合集归属：UP 主就是这位歌手 = 最可信（他自己发的合集）
+      if (String(v.owner || '').toLowerCase().includes(artist.toLowerCase())) {
+        bonus += 120;
+        notes.push('歌手本人投稿');
+      }
+      // ④ 杂锦合集（"神仙打架""精选""盘点"这类由第三方拼的）降低可信度
+      if (/神仙打架|盘点|合集汇总|杂锦|串烧|top\d|排行榜/.test(String(v.collectionTitle || ''))) {
+        bonus -= 120;
+        notes.push('第三方杂锦');
+      }
+
+      hits.push({ ...v, diff, bonus, notes });
     }
     if (!hits.length) return null;
 
-    // 时长最接近的优先
-    hits.sort((a, b) => a.diff - b.diff);
+    // 可信度高的优先，其次时长最接近
+    hits.sort((a, b) => (b.bonus - a.bonus) || (a.diff - b.diff));
     const best = hits[0];
-    this.logger.info(`📚 在合集「${String(best.collectionTitle).slice(0, 24)}」里命中「${best.part}」（${best.duration}s，差${best.diff}s）`);
+
+    // 分数 = 基础分 + 可信度加成。
+    // 原来是死值 1100，会碾压一切 —— 包括现场饭拍和第三方杂锦合集。
+    // 现在：歌手本人投稿的合集 ≈ 1180，普通合集 ≈ 1060，
+    //       现场/饭拍 ≈ 560（低于正常候选里最靠谱的那些，不再碾压）。
+    const score = 1060 + Number(best.bonus || 0);
+
+    this.logger.info(
+      `📚 在合集「${String(best.collectionTitle).slice(0, 24)}」里命中「${best.part}」` +
+        `（${best.duration}s，差${best.diff}s${best.notes && best.notes.length ? ' · ' + best.notes.join('/') : ''}）→ ${score}分`
+    );
 
     return {
       bvid: best.bvid,
@@ -2400,8 +2721,8 @@ class BilibiliClient {
       play: best.play || 0,
       pic: best.pic || '',
       description: '',
-      score: 1100, // 合集命中，置顶
-      reasons: [`热门歌手合集中命中（${artist} · P${best.page}）`],
+      score,
+      reasons: [`热门歌手合集中命中（${artist} · P${best.page}${best.notes && best.notes.length ? ' · ' + best.notes.join('/') : ''}）`],
       titleMatch: 'exact',
       instrumental: false,
       derivative: false,
@@ -2998,4 +3319,9 @@ module.exports = {
   isReactionLike,
   isSpeedVariant,
   SPEED_VARIANT_PATTERN,
+  // 选歌匹配的两个关键判定（导出是为了让回归测试直接调真代码，
+  // 而不是从源码里抠字符串 —— 那样容易被注释/模板字符串坑到）
+  isSafeSubstringMatch,
+  collectionTrust,
+  isLabelOrDistributor,
 };
