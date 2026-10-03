@@ -41,8 +41,11 @@ echo.
 echo   1. Put the Live Companion window in FRONT of the overlay
 echo      (or make it fullscreen). The overlay should now be hidden.
 echo   2. Check the Live Companion preview:
-echo        - overlay content IS visible  -> works, keep this mode
-echo        - blank / wrong content       -> not supported,
+rem  NOTE: ">" inside an echo must be escaped as "^>", otherwise cmd treats it
+rem        as a file redirect - it silently creates a junk file and swallows
+rem        the line. (This bit us once: a stray file named "works" appeared.)
+echo        - overlay content IS visible  --^> works, keep this mode
+echo        - blank / wrong content       --^> not supported,
 echo                                         use the normal launcher
 echo   3. Ctrl+Alt+Q quits the overlay.
 echo.
