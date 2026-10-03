@@ -15,6 +15,17 @@ namespace SongOverlay
     /// <summary>
     /// 歌单悬浮窗 —— 独立透明窗口程序。
     ///
+    /// 【可以完全独立使用】
+    ///   它只做一件事：连上一个 WebSocket 服务，把对方推来的歌单画成透明窗口。
+    ///   不依赖任何特定的点歌程序 —— 任何按下面协议推送数据的程序都能驱动它。
+    ///
+    ///   WebSocket 地址：ws://&lt;host&gt;:&lt;port&gt;/ws/audio
+    ///   服务端推送的消息格式（JSON，字段都可选）：
+    ///     {"type":"now","song":"晴天","status":"playing",
+    ///      "nickname":"观众甲","source":"周杰伦精选 · P3","pic":"https://..."}
+    ///     {"type":"queue","items":[{"song":"稻香","nickname":"观众乙"}, ...]}
+    ///   收不到连接就显示「等待点歌程序连接…」，不会报错也不影响其它功能。
+    ///
     /// 为什么做成独立 exe（而不是浏览器标签页 / PowerShell 脚本）：
     ///   1) 直播伴侣的「窗口捕获」会在列表里看到一堆 Chrome 进程，很难分辨、容易选错；
     ///      独立 exe 在列表里只有一个「歌单悬浮窗」，一眼能认出来。
@@ -23,17 +34,29 @@ namespace SongOverlay
     ///   3) 零运行时依赖：编译成单个 exe，不用装 Electron / 不用开浏览器。
     ///
     /// 用法：
-    ///   SongOverlay.exe [--port 8787] [--max 6] [--left 40] [--top -1]
-    ///                   [--fixed] [--no-taskbar] [--behind]
+    ///   SongOverlay.exe [--host 127.0.0.1] [--port 8787] [--max 6]
+    ///                   [--left 40] [--top -1]
+    ///                   [--fixed] [--no-taskbar] [--behind] [--no-cover]
     ///   快捷键：Ctrl+Alt+T 切换鼠标穿透 / Ctrl+Alt+M 关穿透 / Ctrl+Alt+Q 退出
     /// </summary>
     internal static class Program
     {
+        public static string Host = "127.0.0.1";
         public static int Port = 8787;
         public static int MaxItems = 6;
         public static int LeftPos = 40;
         public static int TopPos = -1;
         public static bool ClickThrough = true;
+
+        /// <summary>
+        /// 是否去取封面图。
+        ///
+        /// 封面要经过点歌插件的 /api/img 代理才能拿到（B 站图有防盗链，
+        /// 直接下会 403）。所以独立使用时默认关掉 —— 关掉之后只是不画封面，
+        /// 歌单文字照常显示。要用封面就加 --no-cover 的反面（默认开启也没关系，
+        /// 取不到会静默跳过）。
+        /// </summary>
+        public static bool NoCover = false;
 
         /// <summary>
         /// 是否隐藏任务栏按钮 / 不进 Alt+Tab。
@@ -67,13 +90,15 @@ namespace SongOverlay
             {
                 string a = args[i];
                 string v = i + 1 < args.Length ? args[i + 1] : null;
-                if (a == "--port" && v != null) Port = int.Parse(v);
+                if (a == "--host" && v != null) Host = v;
+                else if (a == "--port" && v != null) Port = int.Parse(v);
                 else if (a == "--max" && v != null) MaxItems = int.Parse(v);
                 else if (a == "--left" && v != null) LeftPos = int.Parse(v);
                 else if (a == "--top" && v != null) TopPos = int.Parse(v);
                 else if (a == "--fixed") ClickThrough = false;
                 else if (a == "--no-taskbar") NoTaskbar = true;
                 else if (a == "--behind") Behind = true;
+                else if (a == "--no-cover") NoCover = true;
             }
 
             Application.EnableVisualStyles();
@@ -377,13 +402,15 @@ namespace SongOverlay
             _dirty = true;
         }
 
-        /// <summary>WebSocket 线程：连本机服务，收状态就刷新</summary>
+        /// <summary>WebSocket 线程：连服务端，收状态就刷新</summary>
         private void EnsureWsThread()
         {
             if (_wsThread != null && _wsThread.IsAlive) return;
             _wsThread = new Thread(WsLoop) { IsBackground = true };
             _wsThread.Start();
         }
+
+        private bool _everConnected = false;
 
         private void WsLoop()
         {
@@ -393,8 +420,11 @@ namespace SongOverlay
                 {
                     using (var client = new TcpClient())
                     {
-                        var ar = client.BeginConnect(IPAddress.Loopback, Program.Port, null, null);
-                        if (!ar.AsyncWaitHandle.WaitOne(4000) || !client.Connected) throw new Exception("连接超时");
+                        IPAddress addr;
+                        if (!IPAddress.TryParse(Program.Host, out addr)) addr = IPAddress.Loopback;
+                        var ar = client.BeginConnect(addr, Program.Port, null, null);
+                        if (!ar.AsyncWaitHandle.WaitOne(4000) || !client.Connected)
+                            throw new Exception("连接超时");
                         client.EndConnect(ar);
                         client.NoDelay = true;
                         var stream = client.GetStream();
@@ -402,7 +432,7 @@ namespace SongOverlay
                         string key = Convert.ToBase64String(Guid.NewGuid().ToByteArray());
                         string req =
                             "GET /ws/audio HTTP/1.1\r\n" +
-                            "Host: 127.0.0.1:" + Program.Port + "\r\n" +
+                            "Host: " + Program.Host + ":" + Program.Port + "\r\n" +
                             "Upgrade: websocket\r\n" +
                             "Connection: Upgrade\r\n" +
                             "Sec-WebSocket-Key: " + key + "\r\n" +
@@ -425,7 +455,11 @@ namespace SongOverlay
                         if (handshake.IndexOf(" 101", StringComparison.Ordinal) < 0)
                             throw new Exception("握手失败");
 
-                        lock (_lock) { _status = "已连接（Ctrl+Alt+T 穿透 / M 可拖动 / Q 退出）"; }
+                        lock (_lock)
+                        {
+                            _everConnected = true;
+                            _status = "已连接（Ctrl+Alt+T 穿透 / M 可拖动 / Q 退出）";
+                        }
                         _dirty = true;
 
                         // 收消息
@@ -439,7 +473,15 @@ namespace SongOverlay
                 }
                 catch (Exception ex)
                 {
-                    lock (_lock) { _status = "服务未连接，正在重试…（" + ex.Message + "）"; }
+                    lock (_lock)
+                    {
+                        // 【独立使用的友好提示】
+                        // 从没连上过 → 说明就是没在跑点歌程序，别说"出错"，说"等待"。
+                        // 连上过又断了 → 那是真断了，把原因写出来方便排查。
+                        _status = _everConnected
+                            ? "连接断开，正在重连…（" + ex.Message + "）"
+                            : "等待点歌程序连接…（监听 " + Program.Host + ":" + Program.Port + "）";
+                    }
                     _dirty = true;
                 }
                 Thread.Sleep(2000);
@@ -495,12 +537,68 @@ namespace SongOverlay
             return true;
         }
 
-        /// <summary>解析服务端推来的 JSON（手写解析，不依赖任何 JSON 库）</summary>
+        /// <summary>
+        /// 解析服务端推来的 JSON（手写解析，不依赖任何 JSON 库）。
+        ///
+        /// 【支持两种格式】
+        ///   1) 扁平格式（推荐给第三方用，README 里公开的就是这个）：
+        ///        {"type":"now", "song":"晴天", "status":"playing",
+        ///         "nickname":"观众甲", "source":"精选 · P3", "pic":"https://..."}
+        ///        {"type":"queue", "items":[{"song":"稻香","nickname":"观众乙"}]}
+        ///   2) 点歌插件推的完整状态（向后兼容，不要删）：
+        ///        {"type":"state", "state":{"current":{...},"queue":[...]}}
+        ///
+        /// 【为什么两种都要】原来只认第 2 种，而 README 里写的是第 1 种 ——
+        /// 别人按文档推数据会"连上了但什么都不显示"，很难查。
+        /// 现在两种都认，第三方可以只用最简单的扁平格式。
+        /// </summary>
         private void HandleMessage(string json)
         {
             if (string.IsNullOrEmpty(json)) return;
             try
             {
+                string type = ExtractString(json, "type");
+
+                // ---- 格式 1a：{"type":"now", ...} 直接就是当前歌曲 ----
+                if (type == "now" && ExtractString(json, "song") != null)
+                {
+                    var nowFlat = new NowState
+                    {
+                        HasSong = true,
+                        Song = ExtractString(json, "song"),
+                        Nickname = ExtractString(json, "nickname"),
+                        Status = ExtractString(json, "status"),
+                        Source = ExtractString(json, "source"),
+                        PicUrl = ExtractString(json, "pic"),
+                    };
+                    lock (_lock) { _now = nowFlat; }
+                    _dirty = true;
+                    return;
+                }
+
+                // ---- 格式 1b：{"type":"queue", "items":[...]} 只更新队列 ----
+                if (type == "queue" && json.IndexOf("\"items\"", StringComparison.Ordinal) >= 0)
+                {
+                    var items = new List<QueueItem>();
+                    string arr = ExtractArray(json, "items");
+                    if (arr != null)
+                    {
+                        foreach (string obj in SplitObjects(arr))
+                        {
+                            var it = new QueueItem
+                            {
+                                Song = ExtractString(obj, "song"),
+                                Nickname = ExtractString(obj, "nickname"),
+                            };
+                            if (!string.IsNullOrEmpty(it.Song)) items.Add(it);
+                        }
+                    }
+                    lock (_lock) { _queue = items; }
+                    _dirty = true;
+                    return;
+                }
+
+                // ---- 格式 2：插件的完整状态 ----
                 string state = ExtractObject(json, "state");
                 if (state == null && json.IndexOf("\"current\"", StringComparison.Ordinal) >= 0) state = json;
                 if (state == null) return;
@@ -516,11 +614,14 @@ namespace SongOverlay
                         now.Song = song;
                         now.Nickname = ExtractString(cur, "nickname");
                         now.Status = ExtractString(cur, "status");
+                        // 扁平字段优先（第三方可能直接平铺），没有就找 pick 里的
+                        now.Source = ExtractString(cur, "source");
+                        now.PicUrl = ExtractString(cur, "pic");
                         string pick = ExtractObject(cur, "pick");
                         if (pick != null)
                         {
-                            now.Source = ExtractString(pick, "source");
-                            now.PicUrl = ExtractString(pick, "pic");
+                            if (string.IsNullOrEmpty(now.Source)) now.Source = ExtractString(pick, "source");
+                            if (string.IsNullOrEmpty(now.PicUrl)) now.PicUrl = ExtractString(pick, "pic");
                         }
                     }
                 }
@@ -861,27 +962,54 @@ namespace SongOverlay
             return p;
         }
 
-        /// <summary>取封面（走本机图片代理，B站图有防盗链）</summary>
+        /// <summary>
+        /// 取封面。
+        ///
+        /// 【会优雅退化】B 站封面图有防盗链，直接下会 403，必须经过一个本机图片代理
+        /// （点歌插件提供了 /api/img）。所以：
+        ///   · 没开 --no-cover 时先试代理
+        ///   · 代理不存在 / 取不到 → 静默跳过，不画封面而已，歌单文字照常显示
+        /// 这样悬浮窗脱离点歌插件也能正常用。
+        /// </summary>
         private void DrawCover(Graphics g, Rectangle r)
         {
             NowState now;
             lock (_lock) { now = _now; }
             string url = now.PicUrl;
             if (string.IsNullOrEmpty(url)) return;
+            if (Program.NoCover) return;
 
             if (url != _coverUrl)
             {
                 _coverUrl = url;
                 if (_cover != null) { _cover.Dispose(); _cover = null; }
-                try
+
+                // 先试本机图片代理（点歌插件提供的），失败再直接试原图
+                foreach (var full in new[]
                 {
-                    string full = "http://127.0.0.1:" + Program.Port + "/api/img?u=" + Uri.EscapeDataString(url);
-                    var wc = new WebClient();
-                    byte[] data = wc.DownloadData(full);
-                    using (var ms = new MemoryStream(data))
-                        _cover = new Bitmap(ms);
+                    "http://" + Program.Host + ":" + Program.Port + "/api/img?u=" + Uri.EscapeDataString(url),
+                    url,
+                })
+                {
+                    try
+                    {
+                        var wc = new WebClient();
+                        // B 站的图要带 Referer 才给，直接下载时补上
+                        wc.Headers.Add("Referer", "https://www.bilibili.com/");
+                        wc.Headers.Add(
+                            "User-Agent",
+                            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36"
+                        );
+                        byte[] data = wc.DownloadData(full);
+                        using (var ms = new MemoryStream(data))
+                            _cover = new Bitmap(ms);
+                        break; // 成功就不试下一个
+                    }
+                    catch
+                    {
+                        _cover = null;
+                    }
                 }
-                catch { _cover = null; }
             }
             if (_cover == null) return;
 

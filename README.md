@@ -600,9 +600,19 @@ npm run rank 海阔天空 晴天     :: 看候选排名，调打分用
 npm run probe 7456814         :: 纯命令行收弹幕，排查通道问题
 npm run config show           :: 查看/修改配置
 npm run overlay               :: 启动歌单悬浮窗（给直播伴侣做窗口捕获）
+npm run overlay:capture       :: 悬浮窗·捕获兼容模式（关掉鼠标穿透，采集软件挑食时用）
+npm run overlay:hidden        :: 悬浮窗·隐藏模式（不置顶，可被别的窗口盖住）
+npm run overlay:place         :: 悬浮窗·摆位工具
+npm run overlay:where         :: 悬浮窗·查位置
+npm run overlay:build         :: 重新编译悬浮窗（转发到 overlay\build.bat）
 npm run pin                   :: 重建固定答案表（pins.json）
 npm run index                 :: 重建合集索引（让热门歌每次选同一个版本）
 ```
+
+> **歌单悬浮窗是一个独立子项目**（`overlay/` 目录），不依赖本项目任何东西 ——
+> 它只是连一个 WebSocket 收歌单数据，任何按协议推 JSON 的程序都能驱动它。
+> 想单独用/单独改造的话，直接把 `overlay/` 拷走，双击 `build.bat` 就能编译。
+> 完整文档和通信协议见 **[overlay/README.md](overlay/README.md)**。
 
 实测参考：10000 条弹幕（7500 次点歌）在 4.1 秒内处理完，堆内存只涨 16.6MB，
 队列/历史/弹幕缓存都被正确裁剪到上限——长时间开播不会越跑越胀。
@@ -694,6 +704,13 @@ douyin-song-request/
 │     └─ logger.js / util.js（含 LRU 缓存、限速器）
 ├─ public/                  # 控制台 / 音乐播放页 / 启动向导
 ├─ extension/               # 浏览器插件（弹幕转发 + 悬浮小窗）
+├─ overlay/                 # 【独立子项目】歌单悬浮窗，见 overlay/README.md
+│  ├─ SongOverlay.cs        #   悬浮窗本体（Win32 分层窗口，真透明）
+│  ├─ OverlayPlacer.cs      #   摆位工具
+│  ├─ WhereIsIt.cs          #   查位置 / 挪窗口
+│  ├─ WinDiag.cs            #   窗口诊断（直播伴侣找不到时用）
+│  ├─ build.bat / run.bat   #   自带构建与启动脚本（可单独拷走使用）
+│  └─ README.md             #   悬浮窗自己的完整文档 + 通信协议
 ├─ scripts/
 │  ├─ checkall.js           # 一键体检（推荐）
 │  ├─ doctor.js             # 轻量体检

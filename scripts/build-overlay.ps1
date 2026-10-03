@@ -1,77 +1,33 @@
-# 编译歌单悬浮窗相关的所有程序（用系统自带的 C# 编译器，不需要装 SDK）
+# 编译歌单悬浮窗（转发到 overlay 目录里自己的构建脚本）
 #
-# 为什么用 csc.exe 而不是 dotnet：
-#   Windows 自带 .NET Framework 的 C# 编译器，直接产出单个 exe，
-#   用户机器上不用装 .NET SDK / Electron / 任何运行时（.NET Framework 4.x 系统自带）。
+# 【为什么只做转发】
+#   悬浮窗现在是**独立子项目**（overlay/ 目录，自带 README / build.bat / run.bat），
+#   不依赖点歌插件的任何东西。编译器调用方式只应该有一份，
+#   放在 overlay/build.bat 里 —— 这样别人把 overlay 目录单独拷走也能编译。
+#   这里保留一个入口只是为了不破坏 `npm run overlay:build` 这个习惯用法。
 
 $ErrorActionPreference = 'Stop'
 
 $root = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
-$srcDir = Join-Path $root 'overlay'
-$outDir = Join-Path $srcDir 'bin'
+$bat = Join-Path $root 'overlay\build.bat'
 
-if (-not (Test-Path $outDir)) { New-Item -ItemType Directory -Path $outDir | Out-Null }
-
-# 找 csc.exe（.NET Framework 的编译器，系统自带）
-$csc = @(
-  "$env:WINDIR\Microsoft.NET\Framework64\v4.0.30319\csc.exe",
-  "$env:WINDIR\Microsoft.NET\Framework\v4.0.30319\csc.exe"
-) | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-if (-not $csc) { throw "找不到 csc.exe（系统缺 .NET Framework 4.x？）" }
-
-Write-Host "编译器: $csc"
-Write-Host ""
-
-# 要编译的程序。ui=$true 表示是窗口程序（/target:winexe，不弹黑框）
-$targets = @(
-  @{ src = 'SongOverlay.cs';   exe = 'SongOverlay.exe';   ui = $true;  desc = '歌单悬浮窗（透明置顶）' },
-  @{ src = 'OverlayPlacer.cs'; exe = 'OverlayPlacer.exe'; ui = $true;  desc = '摆位工具（拖动/贴角/穿透）' },
-  @{ src = 'WhereIsIt.cs';     exe = 'WhereIsIt.exe';     ui = $false; desc = '查位置（命令行）' },
-  @{ src = 'WinDiag.cs';       exe = 'WinDiag.exe';       ui = $false; desc = '窗口诊断（直播伴侣找不到时用）' }
-)
-
-$ok = 0
-foreach ($t in $targets) {
-  $src = Join-Path $srcDir $t.src
-  $exe = Join-Path $outDir $t.exe
-  if (-not (Test-Path $src)) {
-    Write-Host ("  -  跳过（源文件不存在）: " + $t.src) -ForegroundColor Yellow
-    continue
-  }
-
-  $mode = if ($t.ui) { 'winexe' } else { 'exe' }
-  $refs = @('/reference:System.dll')
-  if ($t.ui) {
-    $refs += '/reference:System.Drawing.dll'
-    $refs += '/reference:System.Windows.Forms.dll'
-  }
-
-  & $csc /nologo "/target:$mode" /optimize+ "/out:$exe" @refs $src 2>&1 |
-    Where-Object { $_ -notmatch 'warning CS' } |
-    ForEach-Object { Write-Host ("      " + $_) }
-
-  if (Test-Path $exe) {
-    $kb = [math]::Round((Get-Item $exe).Length / 1KB, 1)
-    Write-Host ("  OK  " + $t.exe.PadRight(20) + "$kb KB   " + $t.desc) -ForegroundColor Green
-    $ok++
-  } else {
-    Write-Host ("  !!  " + $t.exe + " 编译失败") -ForegroundColor Red
-  }
+if (-not (Test-Path $bat)) {
+  throw "找不到 overlay\build.bat —— 悬浮窗子项目不完整？"
 }
 
+Write-Host "歌单悬浮窗是独立子项目，正在调用它自己的构建脚本："
+Write-Host "  overlay\build.bat"
 Write-Host ""
-if ($ok -eq $targets.Count) {
-  Write-Host "全部编译成功（$ok/$($targets.Count)）" -ForegroundColor Green
-} else {
-  Write-Host "编译完成 $ok/$($targets.Count)" -ForegroundColor Yellow
+Write-Host "（它也可以单独使用：进 overlay 目录双击 build.bat 即可）"
+Write-Host ""
+
+& cmd /c "`"$bat`""
+
+if ($LASTEXITCODE -ne 0) {
+  Write-Host ""
+  Write-Host "构建脚本返回 $LASTEXITCODE，可能编译失败了。" -ForegroundColor Red
 }
+
+# build.bat 末尾有 pause，非交互环境下会卡住，这里做个收尾提示
 Write-Host ""
-Write-Host "启动方式:"
-Write-Host "   悬浮窗        npm run overlay"
-Write-Host "   捕获兼容模式  npm run overlay:capture   （直播伴侣找不到时用）"
-Write-Host "   摆位工具      npm run overlay:place"
-Write-Host "   查位置        npm run overlay:where"
-Write-Host "   窗口诊断      overlay\bin\WinDiag.exe   （列出所有可捕获窗口及其属性）"
-Write-Host ""
-Write-Host "提示：编译前先关掉正在运行的悬浮窗，否则 exe 被占用会写不进去。" -ForegroundColor DarkGray
+Write-Host "产物在 overlay\bin\ 目录。" -ForegroundColor Green
