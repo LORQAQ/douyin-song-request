@@ -761,8 +761,9 @@ class WebServer {
     let rel = pathname === '/' ? '/index.html' : pathname;
     if (rel === '/audio') rel = '/audio.html';
     if (rel === '/launcher') rel = '/launcher.html';
-    // 歌单悬浮层（给直播伴侣做窗口捕获用，背景透明）
-    if (rel === '/overlay') rel = '/overlay.html';
+    // 注：原来这里还有 /overlay → overlay.html（浏览器版歌单悬浮层）。
+    // 歌单悬浮窗已经拆成独立子项目（见仓库的 overlay/ 目录，C# 写的真透明窗口），
+    // 浏览器版功能重复且需要占一个 Chrome 窗口，所以移除了。
     const filePath = path.join(this.publicDir, path.normalize(rel).replace(/^([/\\])+/, ''));
     // 包含性检查要带上路径分隔符：纯字符串前缀比较会让 `public-backup/x`
     // 这种同级目录也通过检查（现在目录树里没有这种目录，但写法本身不安全）。

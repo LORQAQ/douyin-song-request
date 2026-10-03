@@ -42,12 +42,15 @@ if ($conns.Count -eq 0) {
   }
 }
 
-# ---- 2) 停悬浮窗相关程序 ----
+# ---- 2) 停悬浮窗相关程序（如果装了的话）----
+# 歌单悬浮窗是独立子项目，不随本仓库分发；没装就自然什么都不用停。
 Say "  [2/3] 停止悬浮窗 …"
 $names = @('SongOverlay', 'OverlayPlacer')
+$anyOverlay = $false
 foreach ($n in $names) {
   $ps = @(Get-Process -Name $n -ErrorAction SilentlyContinue)
   if ($ps.Count -eq 0) { continue }
+  $anyOverlay = $true
   foreach ($p in $ps) {
     Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
     if (-not (Get-Process -Id $p.Id -ErrorAction SilentlyContinue)) {
@@ -56,7 +59,7 @@ foreach ($n in $names) {
     }
   }
 }
-if ($killed -eq 0) { Say "        本来就没在跑" }
+if (-not $anyOverlay) { Say "        没装悬浮窗（它是独立子项目，可选）" 'DarkGray' }
 
 # ---- 3) 可选：关掉音乐播放页 ----
 Say "  [3/3] 音乐播放页 …"

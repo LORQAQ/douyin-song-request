@@ -188,7 +188,8 @@ module.exports = async function registerRegressionTests({ test, testAsync, asser
           '/api/img?u=https%3A%2F%2Fevil.example.com%2Fx.jpg', // 非白名单 → 403
           '/',
           '/audio',
-          '/overlay',
+          // 注：/overlay 已经移除（浏览器版歌单页拆掉了，悬浮窗改为独立子项目），
+          // 现在访问它是 404 —— 只要不是 500 就没问题。
           '/launcher',
           '/favicon.ico',
         ];

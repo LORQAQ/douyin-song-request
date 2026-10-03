@@ -102,6 +102,17 @@
 - 不收集、不上传任何数据
 - 只在本机转发公开可访问的 B 站流地址，不存储音视频内容
 
+### 关于歌单悬浮窗
+
+歌单悬浮窗（给观众看点歌列表的透明窗口）**已拆成独立子项目**，源码在仓库的
+[overlay/](https://github.com/LORQAQ/douyin-song-request/tree/main/overlay) 目录，
+不依赖点歌插件的任何代码 —— 任何按协议推 JSON 的程序都能驱动它。
+
+- 它自带 README、编译脚本、启动脚本，把整个目录拷走也能单独用
+- 预编译程序在 [Release](https://github.com/LORQAQ/douyin-song-request/releases/latest) 附件里
+- **不装它完全不影响点歌功能**（只是观众看不到歌单）
+- 原来那个「浏览器版悬浮层」（/overlay 网页）已移除：功能重复，
+  而且要占一个 Chrome 窗口，不如独立小程序的真透明窗口好用
 ### 已知限制
 
 - B 站音频直链最高约 192 Kbps AAC（标题写「无损 / Hi-Res」也是这个上限）

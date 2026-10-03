@@ -36,16 +36,20 @@ echo.
 echo   [2/4] Opening console ...
 start "" "http://127.0.0.1:8787/"
 
-echo   [3/4] Opening audio page (this one makes sound) ...
+echo   [3/3] Opening audio page (this one makes sound) ...
 timeout /t 1 /nobreak >nul
 start "" "http://127.0.0.1:8787/audio"
 
-echo   [4/4] Starting song-list overlay ...
-tasklist /fi "imagename eq SongOverlay.exe" 2>nul | findstr /i "SongOverlay.exe" >nul
-if not errorlevel 1 (
-  echo         Overlay already running - skip
-) else (
-  start "" "%~dp0..\overlay\bin\SongOverlay.exe"
+rem 歌单悬浮窗是独立子项目，不随本仓库分发。
+rem 自己编译好放进 overlay\bin\ 的话这里会顺手启动它。
+if exist "%~dp0..\overlay\bin\SongOverlay.exe" (
+  echo   [+] Starting song-list overlay ...
+  tasklist /fi "imagename eq SongOverlay.exe" 2>nul | findstr /i "SongOverlay.exe" >nul
+  if not errorlevel 1 (
+    echo       Overlay already running - skip
+  ) else (
+    start "" "%~dp0..\overlay\bin\SongOverlay.exe"
+  )
 )
 
 echo.
@@ -55,11 +59,10 @@ echo   ============================================
 echo.
 echo   Console   http://127.0.0.1:8787/
 echo   Audio     http://127.0.0.1:8787/audio   (this one makes sound)
-echo   Overlay   bottom-left corner of the screen
 echo.
 echo   Tips:
 echo     - Audio page should show a GREEN line when it can feed the stream
-echo     - Move the overlay: desktop shortcut "Overlay Positioner"
+echo     - Song-list overlay for viewers: an add-on, see overlay\README.md
 echo     - Stop everything: desktop shortcut "Stop"
 echo.
 echo   This window closes in 6 seconds ...
