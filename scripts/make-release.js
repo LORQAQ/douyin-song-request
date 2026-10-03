@@ -130,6 +130,33 @@ B 站搜索结果每次都不一样，但合集中的曲目是确定的 ——
   const head = ref.json.object.sha;
   log('目标 commit: ' + head.slice(0, 8));
 
+  // 【tag 必须跟着最新 commit 走】
+  // 否则「Release 指向的代码」和「仓库最新代码」不一致 ——
+  // 别人从 Release 下的源码包会缺文件。之前就踩过：tag 停在旧 commit，
+  // README 更新根本不在里面。
+  const tagRef = await api('GET', `/repos/${OWNER}/${REPO}/git/ref/tags/${TAG}`);
+  if (tagRef.status === 200 && tagRef.json.object.sha !== head) {
+    log(`tag ${TAG} 当前指向 ${tagRef.json.object.sha.slice(0, 8)}，落后于 main，正在更新…`);
+    const moved = await api('PATCH', `/repos/${OWNER}/${REPO}/git/refs/tags/${TAG}`, {
+      sha: head,
+      force: true,
+    });
+    if (moved.status === 200) log(`✅ tag 已移到 ${head.slice(0, 8)}`);
+    else {
+      log('⚠️ 移动 tag 失败（可能是 annotated tag）：' + moved.text.slice(0, 150));
+      await api('DELETE', `/repos/${OWNER}/${REPO}/git/refs/tags/${TAG}`);
+      const recreated = await api('POST', `/repos/${OWNER}/${REPO}/git/refs`, {
+        ref: `refs/tags/${TAG}`,
+        sha: head,
+      });
+      log(recreated.status === 201 ? `✅ tag 已重建指向 ${head.slice(0, 8)}` : '❌ tag 重建失败');
+    }
+  } else if (tagRef.status === 200) {
+    log(`tag ${TAG} 已指向最新 commit`);
+  } else {
+    log(`tag ${TAG} 还不存在，Release 创建时会自动建`);
+  }
+
   // 已存在就删掉重建（方便反复调整）
   const existing = await api('GET', `/repos/${OWNER}/${REPO}/releases/tags/${TAG}`);
   if (existing.status === 200) {
