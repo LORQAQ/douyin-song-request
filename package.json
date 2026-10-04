@@ -48,7 +48,8 @@
     "pin": "node scripts/make-pins.js",
     "index": "node scripts/index-collections.js",
     "overlay:capture": "overlay\\bin\\SongOverlay.exe --fixed",
-    "overlay:hidden": "overlay\\bin\\SongOverlay.exe --behind --fixed"
+    "overlay:hidden": "overlay\\bin\\SongOverlay.exe --behind --fixed",
+    "player": "node scripts/open-player.js"
   },
   "dependencies": {
     "ws": "^8.18.0"

@@ -233,9 +233,18 @@
     "sampleSeconds": 25
   },
   "launchPlayer": {
-    "auto": false,
+    "auto": true,
     "app": true,
     "deviceName": "",
     "userDataDir": ""
+  },
+  "idlePlay": {
+    "enabled": true,
+    "singers": [
+      "周杰伦"
+    ],
+    "delayMs": 8000,
+    "checkEveryMs": 5000,
+    "maxPerRound": 0
   }
 }

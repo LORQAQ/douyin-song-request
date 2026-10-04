@@ -102,6 +102,25 @@
   let volume = 0.8;
   let muted = false;
   let needGesture = false;
+  /**
+   * 【手势已解锁标记（会话级）】
+   *
+   * Chrome 的自动播放策略：同一个页面会话里用户交互过一次之后，
+   * 该页面就不再需要额外手势。把这个事实存下来，
+   * 避免"每次都弹点一下开始播放"把主播直播打断。
+   */
+  const GESTURE_KEY = 'dsh-audio-gesture-ok';
+  function hasGestureOK() {
+    try { return sessionStorage.getItem(GESTURE_KEY) === '1'; } catch (e) { return false; }
+  }
+  function markGestureOK() {
+    if (hasGestureOK()) return;
+    try { sessionStorage.setItem(GESTURE_KEY, '1'); } catch (e) {}
+  }
+  // 页面里任何一次真实交互都算解锁（点哪都行，不用非得点那个提示）
+  ['pointerdown', 'keydown'].forEach((ev) => {
+    window.addEventListener(ev, () => markGestureOK(), { once: true, capture: true });
+  });
   let progressTimer = null;
   let triedBackups = 0;
 
@@ -265,11 +284,38 @@
     audio.play().then(() => {
       setDot('on', '播放中');
       $('hint').style.display = 'none';
+      markGestureOK();
     }).catch((err) => {
+      /**
+       * 【已经点过就不用再点】
+       *
+       * 原来每次切歌只要 play() 被拦，就重新盖一次「点一下开始播放」，
+       * 主播直播中会被反复打断。
+       * 但同一个页面会话里，用户点过一次之后 Chrome 就不再拦了 ——
+       * 所以这里加一道：如果本会话已经确认过手势，先静默重试几次，
+       * 实在不行才弹提示。
+       */
+      if (hasGestureOK()) {
+        setDot('busy', '重新载入…');
+        setTimeout(() => {
+          audio.load();
+          audio.play().then(() => {
+            setDot('on', '播放中');
+            $('hint').style.display = 'none';
+          }).catch(() => {
+            // 静默重试也没成功，这回该弹提示了
+            setDot('busy', '等待点击');
+            needGesture = true;
+            $('hint').style.display = 'flex';
+          });
+        }, 300);
+        return;
+      }
       // 浏览器拦了自动播放：提示点一下
       setDot('busy', '等待点击');
       needGesture = true;
       $('hint').style.display = 'flex';
+      void err;
     });
     startProgress();
   }
@@ -298,6 +344,8 @@
    */
   $('hint').onclick = async () => {
     const errBox = $('hint-err');
+    // 用户点了 → 本会话手势已解锁，后面切歌不该再弹这个提示
+    markGestureOK();
 
     // 兜底：current 没有直链时，退回到「用当前 src 播」或提示重新点歌
     const url = (current && current.audioUrl) || audio.getAttribute('src');
@@ -336,6 +384,45 @@
       err = (await tryPlay()) || err;
     }
 
+    /**
+     * 【格式不支持 / 直链失效 → 自动换备用地址，别直接让主播跳过】
+     *
+     * 实测截图就是这个：选对了歌，但 `<audio>` 抛 NotSupportedError，
+     * 页面上只留一句「请点跳过换一首」—— 其实换个地址就能放。
+     *
+     * 两条退路：
+     *   ① 同一直链的备用地址（B站给的 backupUrl）
+     *   ② 后端另外挑的可播音轨（后端现在会把非首选音轨也带上）
+     * 都失败再考虑内嵌播放器；内嵌也不行才让用户跳过。
+     */
+    const isFormatProblem = err && (err.name === 'NotSupportedError' || err.name === 'MEDIA_ERR_SRC_NOT_SUPPORTED');
+    if (isFormatProblem) {
+      const alts = []
+        .concat(Array.isArray(current && current.backupUrls) ? current.backupUrls : [])
+        .concat(Array.isArray(current && current.altAudioUrls) ? current.altAudioUrls : []);
+      for (let i = 0; i < alts.length && alts[i]; i += 1) {
+        setDot('busy', `换备用音源 ${i + 1}/${alts.length}…`);
+        try {
+          audio.src = alts[i];
+          audio.load();
+          await new Promise((r) => setTimeout(r, 300));
+          await audio.play();
+          err = null;
+          break;
+        } catch (e2) {
+          err = e2;
+        }
+      }
+      if (!err) {
+        if (errBox) errBox.style.display = 'none';
+        $('hint').style.display = 'none';
+        needGesture = false;
+        setDot('on', '播放中（备用音源）');
+        startProgress();
+        return;
+      }
+    }
+
     if (err) {
       // 如实报错，不再静默吞掉
       setDot('off', '播放失败');
@@ -343,7 +430,7 @@
         const name = err.name || '错误';
         let tip = err.message || String(err);
         if (name === 'NotAllowedError') tip = '浏览器仍然拦截了自动播放。请在页面上任意位置再点一次，或点一下播放器控件。';
-        else if (name === 'NotSupportedError') tip = '这个音频格式浏览器不支持（可能是B站换格式了），请点「跳过」换一首。';
+        else if (isFormatProblem) tip = '这个音频格式浏览器不支持（备用音源也试过了），请点「跳过」换一首。';
         else if (name === 'AbortError') tip = '加载被中断了，再点一次通常就好。';
         errBox.textContent = '⚠️ ' + name + '：' + tip;
         errBox.style.display = 'block';

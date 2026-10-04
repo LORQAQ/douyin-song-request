@@ -1,4 +1,4 @@
-﻿'use strict';
+'use strict';
 
 const EventEmitter = require('events');
 const { SongQueue, STATUS } = require('./queue');
@@ -126,6 +126,8 @@ class PlaybackEngine extends EventEmitter {
     force = false,
     artist = '',
     title = '',
+    direct = null,
+    idle = false,
   }) {
     const clean = String(song || '').trim();
     if (!clean) return { ok: false, reason: 'empty' };
@@ -141,8 +143,15 @@ class PlaybackEngine extends EventEmitter {
       }
     }
 
-    const entry = this.queue.createEntry({ song: clean, nickname, userId, message, artist, title });
+    const entry = this.queue.createEntry({ song: clean, nickname, userId, message, artist, title, direct, idle });
     this.stats.requests += 1;
+
+    /**
+     * 【告诉空闲垫播"有人点歌了"】
+     * 垫播会立刻打断自己正在放的那首，把位置让给观众点的歌。
+     * 垫播自己入队时不发这个事件（否则会自己打断自己）。
+     */
+    if (!idle) this.emit('song-requested', { song: clean, nickname });
 
     const isInterrupt = this.mode === 'interrupt';
     if (isInterrupt) this.queue.unshift(entry);
@@ -173,14 +182,24 @@ class PlaybackEngine extends EventEmitter {
       if (entry.pick && entry.status !== STATUS.SEARCHING) {
         return entry;
       }
-      // 观众直接发了B站链接 / BV 号：不做搜索，直接用那个视频。
-      // 这是唯一能保证「放的确实是想要的那个视频」的方式。
-      const direct = parseDirectVideo(entry.song);
+      /**
+       * 观众直接发了B站链接 / BV 号：不做搜索，直接用那个视频。
+       * 这是唯一能保证「放的确实是想要的那个视频」的方式。
+       *
+       * 【空闲垫播也走这条路】垫播的曲目来自歌手合集，本来就带着
+       * bvid + page + cid，不需要（也不该）再按歌名搜一次 ——
+       * 那会引入"同名不同歌"的风险，还多花 2~4 秒。
+       */
+      const direct = entry.direct && entry.direct.bvid ? entry.direct : parseDirectVideo(entry.song);
       let result;
       if (direct) {
         try {
           const pick = await this.bili.pickByVideo(direct);
-          this.logger.info(`🔗 直接用观众指定的视频：${truncate(pick.title, 40)}`);
+          this.logger.info(
+            entry.idle
+              ? `🎵 空闲垫播直接用合集条目：${truncate(pick.title, 40)}`
+              : `🔗 直接用观众指定的视频：${truncate(pick.title, 40)}`
+          );
           result = { ok: true, pick, alternatives: [] };
         } catch (err) {
           result = { ok: false, reason: `指定的视频取不到：${err.message}` };

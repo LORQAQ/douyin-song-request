@@ -1,9 +1,11 @@
 'use strict';
 
 const { loadConfig } = require('./config');
-const { Logger } = require('./lib/logger');
+const { Logger, enableFileLog } = require('./lib/logger');
+const path = require('path');
 const { BilibiliClient } = require('./bilibili/bili-api');
 const { PlaybackEngine } = require('./player/player');
+const { IdlePlayer } = require('./player/idle');
 const { DanmakuService } = require('./danmaku');
 const { WebServer } = require('./server');
 const { MediaProxy } = require('./lib/media-proxy');
@@ -24,6 +26,14 @@ const BANNER = `
 
 async function main() {
   const config = loadConfig(process.argv.slice(2));
+
+  /**
+   * 【日志落盘】必须在建 Logger 之前开，这样启动阶段的日志也留得住。
+   * 直播时出问题（放错歌/自动播放/播放失败）能直接翻 logs/ 里的文件回查，
+   * 不用靠"再复现一次"。
+   */
+  const logFile = enableFileLog(config.__paths.root ? path.join(config.__paths.root, 'logs') : null);
+
   const logger = new Logger('app', config.__flags?.includes('verbose') ? 'debug' : 'info');
 
   if (config.__flags?.includes('help')) {
@@ -32,6 +42,7 @@ async function main() {
   }
 
   console.log(BANNER);
+  if (logFile) logger.info(`日志文件：${logFile}`);
 
   // 把项目根目录带进 bilibili 配置，供 pins.json（本地固定答案表）定位
   const bili = new BilibiliClient({ ...(config.bilibili || {}), __root: config.__paths.root }, logger.child('bili'));
@@ -41,6 +52,17 @@ async function main() {
     logger.child('loudness')
   );
   const engine = new PlaybackEngine({ config, bili, logger: logger.child('player'), mediaProxy, loudness });
+
+  /**
+   * 【空闲垫播】没人点歌时自动播某位歌手的合集，有人点歌立刻打断。
+   *
+   * 需求原话：「直播间没人点歌的时候给我播放周杰伦合集，有人点歌就打断」
+   * 配置见 config.json 的 idlePlay。
+   */
+  const idlePlayer = new IdlePlayer(config, { bili, logger: logger.child('idle'), engine });
+  // 有人点歌 → 立刻打断垫播
+  engine.on('song-requested', () => idlePlayer.noteRealSong());
+  engine.idlePlayer = idlePlayer;
   const danmaku = new DanmakuService(config.danmaku || {}, logger.child('danmaku'), { port: config.server.port });
 
   const server = new WebServer({
@@ -91,6 +113,8 @@ async function main() {
         Object.assign(config, deepMerge(config, safePatch));
         engine.updateConfig(config);
         bili.updateConfig(config.bilibili || {});
+        // 空闲垫播的配置也要跟着更新（否则控制台改了开关，内部还是旧值）
+        if (idlePlayer && safePatch.idlePlay) idlePlayer.applyConfig(config);
         // 落盘时**只写用户改过的那几个字段**：
         // 绝不能把整份默认配置写进 config.json——那样默认值会被固化，
         // 而且会把 example 里的中文注释/内容复制一遍，容易出编码问题。
@@ -258,9 +282,25 @@ async function main() {
   });
   watchdog.start();
 
-  // 自动拉起专用播放器（把音频钉到虚拟声卡）
+  // 空闲垫播：只有配置里 idlePlay.enabled = true 时才真正开始巡检
+  idlePlayer.start();
+
+  /**
+   * 【自动拉起专用播放器 —— 这是"不用点一下就能自动播放"的唯一可靠办法】
+   *
+   * Chrome 默认禁止页面在没有用户手势的情况下播放声音，播放页就得先点一下。
+   * 唯一有效的解法是用 `--autoplay-policy=no-user-gesture-required` 启动，
+   * 而**这个参数只在用专用配置目录启动时才生效**（普通打开的 Chrome 用不上）——
+   * 实测确认过：带这个参数启动后，页面零手势 `play()` 直接成功。
+   *
+   * 所以：
+   *   · launchPlayer.auto = true → 自动起专用播放器（推荐，也是默认行为）
+   *   · --open 也顺手把播放器一起起来，避免"开了控制台却没人开播放器"
+   *   · 都不满足时退回默认浏览器，并在日志里说清"需要点一下"的原因
+   */
   const launchCfg = config.launchPlayer || {};
-  if (launchCfg.auto) {
+  const wantLaunchPlayer = launchCfg.auto || config.__flags?.includes('open');
+  if (wantLaunchPlayer) {
     try {
       launchAudioPlayer({
         url: `${baseUrl}/audio`,
@@ -269,11 +309,25 @@ async function main() {
         app: launchCfg.app !== false,
         logger,
       });
+      logger.info('已用专用播放器打开音频页 —— 浏览器不会拦截自动播放，无需再点。');
+      // 控制台仍然按 openBrowser 的意愿打开（专用播放器只管出声那个窗口）
+      if (config.server.openBrowser) openInDefaultBrowser(`${baseUrl}/`, logger);
     } catch (err) {
-      logger.warn(`自动启动播放器失败：${err.message}（可以手动打开 ${baseUrl}/audio）`);
+      logger.warn(`自动启动专用播放器失败：${err.message}`);
+      logger.warn(
+        `  退回默认浏览器打开 ${baseUrl}/audio —— ` +
+          '那样首次需要点一下页面才能出声（Chrome 的自动播放限制，不是程序问题）。'
+      );
+      openInDefaultBrowser(`${baseUrl}/audio`, logger);
+      if (config.server.openBrowser) openInDefaultBrowser(`${baseUrl}/`, logger);
     }
   } else if (config.server.openBrowser) {
     openInDefaultBrowser(`${baseUrl}/`, logger);
+    logger.warn(
+      `音频页需要手动打开 ${baseUrl}/audio。` +
+        '注意：用默认浏览器打开时，第一次必须点一下页面才会出声。' +
+        '想彻底免点，把 config.json 的 launchPlayer.auto 设为 true。'
+    );
   }
 
   if (!config.danmaku.webRid && source !== 'mock') {

@@ -457,6 +457,15 @@ function isReactionLike(title, description) {
 }
 
 /**
+ * 【梗曲/改编曲识别】—— 这类歌要用另一套评判标准，见 scoreCandidate 里的注释。
+ *
+ * 特征：跟网络热梗、电竞赛事、游戏、主播整活相关，歌名里常带这些词，
+ * 或者原曲本身就是网友/UP 主做的改编作品（不是唱片工业产品）。
+ */
+const MEME_PATTERN =
+  /十六强|零杠|满败|出列|夺冠|卫冕|赛点|加时|翻盘|零封|一穿|挺进|惜败|饮恨|寄了|开摆|摆烂|爆冷|黑马|打脸|破防|绷不住|难绷|笑死|整活|抽象|地狱|阴阳|内涵|上头|洗脑|循环|魔性|鬼畜|沙雕|神曲|梗|meme|爆梗|热梗|乐子|段子|土味|喊麦|应援|助威|打气|加油歌|队歌|团歌|粉丝曲|同人曲|二创曲/;
+
+/**
  * 数字倍速/变调写法，例如「1.1曼波」「1.25倍速」「0.9x」「2倍速」。
  * 这类是拿原曲加工过的再创作，不是原唱。
  * 单独写正则是因为倍速数字组合太多，枚举不现实。
@@ -547,6 +556,58 @@ const INSTRUMENTAL_PATTERN = new RegExp(
     'synthv',
     'Synthesizer',
   ].join('|')
+);
+
+/**
+ * 【只用于扫简介的弱化版】把单字乐器词去掉。
+ *
+ * 实测踩过的坑：「大家一起十六强」的正确版本（240 万播放的官方完整版）
+ * 简介里写了「第一版音频使用 Synthesizer V 手动制作」，
+ * 而上面那张表里的 '笛' 是**单字**，在长篇简介里很容易撞到
+ * （「笛卡尔」「汽笛」…）；类似的还有 '箫'、'鼓'。
+ * 标题短、语境明确，单字词没问题；简介动辄几百字，单字词必须谨慎。
+ */
+const INSTRUMENTAL_PATTERN_DESC = new RegExp(
+  [
+    '伴奏',
+    '纯音乐',
+    '无人声',
+    '\\binstrumentals?\\b', // \b 必须有：否则会匹配到别的词里
+    '卡拉OK',
+    '卡拉ok',
+    '消音',
+    '独奏',
+    '笛子',
+    '竹笛',
+    '长笛',
+    '口琴',
+    '二胡',
+    '古筝',
+    '琵琶',
+    '葫芦丝',
+    '陶笛',
+    '唢呐',
+    '手风琴',
+    '电子琴',
+    '双排键',
+    '八音盒',
+    '音乐盒',
+    '钢琴版',
+    '钢琴曲',
+    '吉他版',
+    '吉他指弹',
+    '指弹',
+    '尤克里里',
+    '口哨',
+    '手机铃声',
+    '彩铃',
+    '\\bmidi\\b',
+    '红石音乐',
+    '音符盒',
+    '音MAD',
+    '音mad',
+  ].join('|'),
+  'i'
 );
 
 /**
@@ -713,6 +774,44 @@ function scoreCandidate(candidate, query, cfg = {}) {
       const u = uploader.toLowerCase();
       return t && u && (u.includes(t) || t.includes(u));
     });
+
+  /**
+   * 【梗曲标记】—— 改编/整活/网络热梗类歌曲要用**另一套评判标准**。
+   *
+   * 实测「大家一起十六强」（英雄联盟 CN 十六强的梗曲）暴露的问题：
+   * 正确的官方完整版（240 万播放、和平台给的时长只差 1 秒）被连着误判两次：
+   *   ① 简介里写「改编自…」讲创作背景 → 判成二创 → 扣 80
+   *   ② 原曲本来就是 UP 主自己投稿的（不是歌手官方号）→ 判成"非一手" → 扣 35
+   * 结果 37 分（门槛 58）被淘汰，最后播了一个 reaction 视频。
+   *
+   * 梗曲的客观事实和常规歌不同：
+   *   · 平台给的"原唱"经常是 **UP 主名**甚至网友戏称（实测「薛盯峨」），不是歌手
+   *   · 原曲**就是** UP 主本人投稿，天然不满足"歌手官方号"这种一手信号
+   *   · 搜索结果里 reaction/切片/解说占大多数（主播听歌、点评）
+   *   · **播放量反而是"这就是官方版"的最强证据**（梗曲靠传播，热度必然集中在原版）
+   *
+   * 所以对梗曲：不罚二创、不罚非一手、提高播放量权重。
+   */
+  const memeList = Array.isArray(cfgLocal.memeSongs) ? cfgLocal.memeSongs : [];
+  /** 这首歌本身是不是梗曲（只看查询词，对所有候选一致） */
+  const queryIsMeme =
+    Boolean(query) &&
+    (memeList.some((m) => m && String(query).includes(String(m))) || MEME_PATTERN.test(String(query)));
+
+  /**
+   * 【这条候选是不是"这首歌自己的版本"】—— 决定它能不能享受梗曲豁免。
+   *
+   * 实测踩过的坑：「大家一起十六强」确认是梗曲后，我把豁免开给了**所有候选**，
+   * 结果 reaction 视频（「苏弟看VCTCN应援小曲《大家一起十六强》…」）也吃到豁免，
+   * 分数反超了真正的官方完整版（128 vs 127）。
+   *
+   * 所以梗曲豁免必须**只给正主**：标题里除了歌名，不能有"某人在看/在听/在解说"这类
+   * 反应语义。reaction 视频在梗曲场景里特别多（主播听歌、点评、整活），
+   * 它们是"蹭这首歌"的，不是这首歌的版本。
+   */
+  const looksReaction = isReactionLike(title_, candidate.description);
+  const isMemeSong = queryIsMeme && !looksReaction;
+
   // 搜索结果自带的标签（不需要额外请求）。拼成一段文本用于判定。
   const searchTags = Array.isArray(candidate.tags) ? candidate.tags.join(' ') : String(candidate.tags || '');
   const instrumental = INSTRUMENTAL_PATTERN.test(title_);
@@ -817,10 +916,16 @@ function scoreCandidate(candidate, query, cfg = {}) {
   }
 
   // 2) 播放量（对数打分，最高 30 分）
+  //
+  // 【梗曲要给更高权重】梗曲靠传播，热度高度集中在**官方原版**那一条上，
+  // 所以"播放量高"在梗曲场景里是"这就是官方版"的强证据，
+  // 而不是普通歌里那种"可能是热门翻唱"的弱信号。
   const play = Number(candidate.play || 0);
-  const playScore = Math.min(30, Math.log10(Math.max(play, 1)) * 6);
+  const playCap = isMemeSong ? 60 : 30;
+  const playScore = Math.min(playCap, Math.log10(Math.max(play, 1)) * (isMemeSong ? 10 : 6));
   score += playScore;
   if (play > 1000000) reasons.push(`${(play / 10000).toFixed(0)}万播放`);
+  if (isMemeSong && playScore >= 30) reasons.push('（梗曲：热度加权）');
 
   // 2b) UP 主质量：认证账号明显加分；粉丝多的也加分。
   //     粉丝数/认证由 _resolveUploaderStats 查好后填进来，取不到就是无认证+0（不加不减）
@@ -904,10 +1009,15 @@ function scoreCandidate(candidate, query, cfg = {}) {
    * 而 372 万播放的名曲版只有 166 分 —— 因为"标题完全吻合"的加分
    * 压过了播放量的权重（播放量最高只加 30 分）。
    *
-   * 判断"歧义"：短 + 不含中日韩文字 + 是常见英文词。
+   * 判断"歧义"：短 + 纯**拉丁字母** + 是常见英文词。
    * 对这类标题：**提高播放量权重**（名曲必然播放量高），这是最可靠的"该选哪首"信号。
+   *
+   * 【必须限定纯拉丁字母】原来只排除了中日韩，于是西里尔（俄语）也被算进来 ——
+   * 实测「Калинка」命中了「Камин（Kamin）」（覆盖率 86%，蹭了热度加权），
+   * 把真正的《卡林卡》挤掉了。俄语/希腊语这类字母表不该走英文歧义标题的逻辑。
    */
-  const isLatinShort = q.length <= 8 && !/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(q);
+  const isLatinShort =
+    q.length <= 8 && /^[a-z]+$/.test(q) && !/[\u3400-\u9fff\u3040-\u30ff\uac00-\ud7af]/.test(q);
   if (isLatinShort && titleUsable && play > 0) {
     // 播放量额外加成：10万 +8 / 100万 +16 / 1000万 +24
     const popBonus = Math.min(24, Math.log10(Math.max(play, 1)) * 4);
@@ -942,8 +1052,14 @@ function scoreCandidate(candidate, query, cfg = {}) {
   // 「在百万豪装录音棚大声听…」里没有翻唱字样，是 reaction 检测外溢到
   // derivative 判定的。人工挑过的 UP 主不该再被标题启发式惩罚。
   if (derivative && !isTrusted) {
-    score -= 80;
-    reasons.push('二创/翻唱');
+    // 【梗曲豁免】梗曲的"原曲"本来就是改编产物，简介里写「改编自…」是讲创作背景，
+    // 不是"这是翻唱"。实测「大家一起十六强」的官方完整版就是这么被扣 80 分丢掉的。
+    if (isMemeSong) {
+      reasons.push('（梗曲：豁免二创惩罚）');
+    } else {
+      score -= 80;
+      reasons.push('二创/翻唱');
+    }
   } else if (derivative && isTrusted) {
     reasons.push('（白名单UP，豁免二创惩罚）');
   }
@@ -959,9 +1075,14 @@ function scoreCandidate(candidate, query, cfg = {}) {
     //
     // 白名单 UP 主也豁免：它们的定位就是"二次上传好音源"，
     // 天然不满足"一手"，罚它等于自相矛盾。
-    if (!titleNearSong) {
+    //
+    // 【梗曲也豁免】梗曲的原曲**就是** UP 主本人投稿的，
+    // 世上根本没有"歌手官方号"这个一手来源 —— 罚它等于永远选不到原曲。
+    if (!titleNearSong && !isMemeSong) {
       score -= 35;
       reasons.push('非一手（降权）');
+    } else if (isMemeSong && !titleNearSong) {
+      reasons.push('（梗曲：豁免非一手降权）');
     }
   }
 
@@ -1043,9 +1164,47 @@ function scoreCandidate(candidate, query, cfg = {}) {
   //     reaction 检测误判（"大声听" 像 reaction），加上二创/非一手，总分被压到 8 分
   //     （门槛 30），于是这个 1162 万播放的正经试听投稿**根本进不了候选池**。
   //     人工挑过的 UP 主不该再被标题启发式惩罚。
-  if (reactionLike && !titleNearSong && !isTrusted) {
-    score -= 25;
-    reasons.push('反应/切片类');
+  //
+  //     【梗曲要罚得更重】梗曲场景下 reaction/切片是压倒性多数
+  //     （实测「大家一起十六强」15 条候选里 9 条是"某人看/听"），
+  //     而且它们播放量也不低、标题也带歌名，按普通 -25 根本压不住。
+  if (looksReaction && !titleNearSong && !isTrusted) {
+    score -= queryIsMeme ? 70 : 25;
+    reasons.push(queryIsMeme ? '反应/切片类（梗曲场景重罚）' : '反应/切片类');
+  }
+
+  /**
+   * 6c) 【梗曲专用·按"标题里歌名含量"压 reaction】
+   *
+   * 实测教训：「大家一起十六强」15 条候选里 9 条是"某人看/听"的 reaction，
+   * 而现有的 reaction 检测**漏掉 4/6 条** ——
+   *   「苏弟看VCTCN应援小曲《大家一起十六强》」← 「看」后面是英文字母 VCTCN
+   *   「cxy听大家一起16强和突然的满败」      ← 「听」后面直接是歌名
+   *   「【Neekoko】看大家一起十六强！」      ← 没写书名号
+   * 因为它要求「听/看」紧跟 2~5 个汉字，遇到英文/数字/书名号就失效。
+   *
+   * 【为什么不去把那个正则修得更宽】试过了：一旦放宽到"标题里有听/看 + 歌名"，
+   * **正常投稿也会被误伤**（「在百万豪装录音棚大声听《打上花火》」就是正经试听源）。
+   *
+   * 换个更可靠的信号：**看标题里"这首歌"占多少**。
+   *   · 官方/原曲：标题基本就是歌名（「【补档】CN零杠八单曲《大家一起十六强》完整版」）
+   *   · reaction ：标题大半是主播名、点评、感叹（歌名只占一小截）
+   *
+   * 只有在**梗曲场景**才用这条（正常歌的搜索结果里 reaction 没这么密集，
+   * 而且已经有多道别的关卡），避免影响既有行为。
+   */
+  if (queryIsMeme && titleUsable && !isTrusted) {
+    const titleLen = t.length || 1;
+    const songLen = q.length || 0;
+    // 歌名在标题里的占比。0.5 以下说明"歌名只是被顺带提了一句"
+    const coverage = songLen / titleLen;
+    if (songLen >= 4 && coverage < 0.5) {
+      score -= 60;
+      reasons.push(`标题里歌名只占 ${Math.round(coverage * 100)}%（更像 reaction/切片）`);
+    } else if (coverage >= 0.75) {
+      score += 25;
+      reasons.push('标题基本就是这首歌');
+    }
   }
 
   // 7) 标题越接近歌名本身，越可能是正经的单曲视频
@@ -1064,7 +1223,7 @@ function scoreCandidate(candidate, query, cfg = {}) {
     score -= 8;
     reasons.push('无简介');
   } else {
-    if (INSTRUMENTAL_PATTERN.test(desc)) {
+    if (INSTRUMENTAL_PATTERN_DESC.test(desc)) {
       score -= 60;
       reasons.push('简介写明是器乐/伴奏版');
     }
@@ -2120,14 +2279,55 @@ class BilibiliClient {
     if (!dash || !dash.audio || !dash.audio.length) {
       throw new Error('该视频没有 DASH 音频流');
     }
-    const best = dash.audio
-      .slice()
-      .sort((a, b) => (b.bandwidth || 0) - (a.bandwidth || 0))[0];
+
+    /**
+     * 【必须优先选浏览器能解码的编码，不能只看码率】
+     *
+     * 原来是「按 bandwidth 从高到低排序取第一个」。这曾经没问题，
+     * 但 B站现在会给部分视频返回 **Dolby 音轨**（`ec-3` / `ac-3`），
+     * 码率比 AAC 高，于是被排到第一 —— 而 **Chrome 不支持 ec-3/ac-3**，
+     * `<audio>` 直接抛 `NotSupportedError`，播放页就卡在
+     * 「这个音频格式浏览器不支持（可能是B站换格式了），请点跳过换一首」。
+     *
+     * 实测截图就是这个现象：歌选对了（蔡徐坤 What a Day），但放不出来。
+     *
+     * 所以：先按**编码可播性**分层，层内再按码率取最高。
+     * 明确排除的编码：ec-3 / ac-3（Dolby）、flac（部分浏览器放不了）、
+     * 以及任何 mimeType 里带 ec-3/ac-3 的。
+     */
+    const UNPLAYABLE = /(^|[^a-z])(ec-3|ac-3|eac3|ac3|mlp|dts)($|[^a-z])/i;
+    const rankCodec = (a) => {
+      const codec = String(a.codecs || a.mimeType || '').toLowerCase();
+      if (UNPLAYABLE.test(codec)) return 2; // 明确放不了 → 最后考虑
+      if (/mp4a|aac/.test(codec)) return 0; // AAC：浏览器支持最好
+      if (/flac/.test(codec)) return 1; // flac 部分浏览器可以
+      return 1; // 其它未知编码：放在 AAC 之后、Dolby 之前
+    };
+    const sorted = dash.audio.slice().sort((a, b) => {
+      const ra = rankCodec(a);
+      const rb = rankCodec(b);
+      if (ra !== rb) return ra - rb;
+      return (b.bandwidth || 0) - (a.bandwidth || 0);
+    });
+    const best = sorted[0];
+    const skippedDolby = rankCodec(sorted[0]) > 0 && dash.audio.some((a) => rankCodec(a) === 0);
+    if (skippedDolby) {
+      this.logger.debug(
+        `音频流选择：跳过了 ${sorted.length - 1} 个非 AAC 音轨（首选 ${best.codecs || best.mimeType}）`
+      );
+    }
     const base = best.baseUrl || best.base_url;
     const backups = (best.backupUrl || best.backup_url || []).slice();
+    // 把其余可播音轨也带上作为备用（主地址失效时可以换）
+    const altStreams = sorted
+      .slice(1)
+      .filter((a) => rankCodec(a) < 2)
+      .slice(0, 2)
+      .map((a) => ({ url: a.baseUrl || a.base_url, codec: a.codecs, bandwidth: a.bandwidth }));
     const stream = {
       url: base,
       backups,
+      altStreams,
       bandwidth: best.bandwidth,
       codec: best.codecs,
       mimeType: best.mimeType,
@@ -3918,6 +4118,7 @@ module.exports = {
   getMixinKey,
   TITLE_NOISE,
   INSTRUMENTAL_PATTERN,
+  INSTRUMENTAL_PATTERN_DESC,
   DERIVATIVE_PATTERN,
   OFFICIAL_PATTERN,
   REACTION_PATTERN,

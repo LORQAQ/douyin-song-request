@@ -289,6 +289,10 @@ class WebServer {
       audioPageOpen: audioClients > 0,
       uptimeMs: process.uptime() * 1000,
       node: process.version,
+      // 空闲垫播状态（控制台显示"正在垫播/待机"用）
+      idlePlay: (this.engine && this.engine.idlePlayer && this.engine.idlePlayer.getState()) || { enabled: false },
+      // 当前这首是不是垫播的（控制台要能区分"观众点的"和"垫的"）
+      currentIsIdle: Boolean(this.engine && this.engine.current && this.engine.current.idle),
     };
   }
 
@@ -606,6 +610,31 @@ class WebServer {
       if (pathname === '/api/mode' && req.method === 'POST') {
         const body = JSON.parse((await readBody(req)) || '{}');
         return this._json(res, { ok: true, mode: this.engine.setMode(body.mode) });
+      }
+
+      /** 空闲垫播开关（控制台一键切，不用改配置文件） */
+      if (pathname === '/api/idle' && req.method === 'POST') {
+        const body = JSON.parse((await readBody(req)) || '{}');
+        const idle = this.engine && this.engine.idlePlayer;
+        if (!idle) return this._json(res, { ok: false, reason: 'idle-player-missing' }, 500);
+        if (typeof body.enabled === 'boolean') {
+          idle.enabled = body.enabled;
+          if (idle.enabled) idle.start();
+          else idle.stop();
+          // 关掉的时候如果正在垫播，顺手停下，别让最后那首一直放着
+          if (!idle.enabled && idle.playingIdle) idle.interruptForRealSong();
+          this.config.idlePlay = { ...(this.config.idlePlay || {}), enabled: idle.enabled };
+          if (this.app.onConfigPatch) this.app.onConfigPatch({ idlePlay: { enabled: idle.enabled } });
+          this.logger.info(`空闲垫播已${idle.enabled ? '开启' : '关闭'}`);
+        }
+        if (Array.isArray(body.singers)) {
+          idle.singers = body.singers.map((x) => String(x || '').trim()).filter(Boolean);
+          idle.playlist = [];
+          idle.cursor = 0;
+          idle._loadPlaylist().catch(() => {});
+          if (this.app.onConfigPatch) this.app.onConfigPatch({ idlePlay: { singers: idle.singers } });
+        }
+        return this._json(res, { ok: true, idlePlay: idle.getState() });
       }
 
       if (pathname === '/api/search') {

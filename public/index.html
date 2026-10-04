@@ -248,6 +248,15 @@
         <div class="row">
           <button id="btn-mode">切换为「立即打断」</button>
           <button id="btn-play-mode">播放方式：纯音频</button>
+          <button id="btn-idle">空闲垫播：读取中…</button>
+        </div>
+        <div class="field" style="margin-top:8px">
+          <label>垫播歌手 <span class="hint" id="idle-info">没人点歌时自动播这位歌手的合集</span></label>
+          <input type="text" id="idle-singers" placeholder="例如：周杰伦、林俊杰（多个用、分隔）" />
+          <span class="hint">
+            没人点歌超过 8 秒就开始垫播；一旦有人点歌会<b>立刻打断</b>，切到观众点的那首。
+            一轮放完会从头再来，直播间不会有静音空档。
+          </span>
         </div>
         <div class="field" style="margin-top:12px">
           <label>音量 <b id="vol-label">80%</b></label>

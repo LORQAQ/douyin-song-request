@@ -258,6 +258,8 @@
     setBadge('badge-mode', 'online', `模式：${isQueue ? '排队播放' : '立即打断'}`);
     $('btn-mode').textContent = isQueue ? '切换为「立即打断」' : '切换为「排队播放」';
     $('btn-play-mode').textContent = data.config && data.config.useDirectStream ? '播放方式：纯音频直链' : '播放方式：内嵌播放器';
+    // 空闲垫播状态（服务端在 /api/status 里给）
+    if (state.status && state.status.idlePlay) updateIdleButton(state.status.idlePlay);
 
     if (data.config && typeof data.config.volume === 'number') {
       const v = Math.round(data.config.volume * 100);
@@ -407,6 +409,72 @@
     send({ type: 'updateConfig', patch: { playback: { useDirectStream: direct, audioMode: true } } });
     setTimeout(() => send({ type: 'skip' }), 200);
   };
+
+  /**
+   * 空闲垫播开关。
+   *
+   * 需求：没人点歌时自动播某位歌手的合集，有人点歌立刻打断。
+   * 这里只负责开关和设置歌手，真正的调度在服务端（src/player/idle.js）。
+   */
+  $('btn-idle').onclick = async () => {
+    const cur = (state.status && state.status.idlePlay) || {};
+    const next = !cur.enabled;
+    try {
+      const r = await fetch('/api/idle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ enabled: next }),
+      });
+      const j = await r.json();
+      if (j && j.ok) updateIdleButton(j.idlePlay);
+      toast({ text: next ? '空闲垫播已开启' : '空闲垫播已关闭' });
+    } catch (e) {
+      toast({ text: '切换失败：' + e.message });
+    }
+  };
+
+  // 改完歌手按回车提交（多个用「、」或「,」分隔）
+  $('idle-singers').onkeydown = async (e) => {
+    if (e.key !== 'Enter') return;
+    const singers = String(e.target.value || '')
+      .split(/[、,，\s]+/)
+      .map((x) => x.trim())
+      .filter(Boolean);
+    if (!singers.length) return;
+    try {
+      const r = await fetch('/api/idle', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ singers }),
+      });
+      const j = await r.json();
+      if (j && j.ok) {
+        updateIdleButton(j.idlePlay);
+        toast({ text: '垫播歌手已改为：' + singers.join('、') });
+      }
+    } catch (err) {
+      toast({ text: '修改失败：' + err.message });
+    }
+  };
+
+  /** 把服务端状态刷到按钮上 */
+  function updateIdleButton(info = {}) {
+    const btn = $('btn-idle');
+    if (!btn) return;
+    btn.textContent = info.enabled ? '空闲垫播：已开启' : '空闲垫播：已关闭';
+    const box = $('idle-singers');
+    if (box && !box.matches(':focus') && Array.isArray(info.singers)) {
+      box.value = info.singers.join('、');
+    }
+    const detail = $('idle-info');
+    if (detail) {
+      const st = info.stats || {};
+      detail.textContent = info.enabled
+        ? `没人点歌时自动播「${(info.singers || []).join('、') || '（未设置歌手）'}」的合集` +
+          `　曲库 ${info.ready || 0} 首 · 已垫 ${st.filled || 0} 次 · 打断 ${st.skippedForRealSong || 0} 次`
+        : '关闭中 —— 没人点歌时直播间会安静';
+    }
+  }
 
   $('btn-normalize').onclick = () => {
     const on = !(state.data && state.data.config && state.data.config.normalizeVolume);

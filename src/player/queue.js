@@ -61,7 +61,7 @@ class SongQueue {
   }
 
   /** 新点歌：先入队占位，稍后补上搜索结果 */
-  createEntry({ song, nickname, userId, message = '', artist = '', title = '' }) {
+  createEntry({ song, nickname, userId, message = '', artist = '', title = '', direct = null, idle = false }) {
     const entry = {
       id: uid('song'),
       song,
@@ -76,6 +76,13 @@ class SongQueue {
        */
       artist: artist || '',
       title: title || '',
+      /**
+       * 【直接指定视频】带 { bvid, page?, cid? } 时不走搜索，直接播这个。
+       * 两个用途：观众贴 BV 号；以及空闲垫播（曲目来自合集，本来就带这些信息）。
+       */
+      direct: direct && direct.bvid ? direct : null,
+      /** 是不是空闲垫播塞进来的（有人点歌时优先打断它） */
+      idle: Boolean(idle),
       status: STATUS.SEARCHING,
       createdAt: Date.now(),
       startedAt: 0,

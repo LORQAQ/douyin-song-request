@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 /**
  * 回归测试：非中文歌匹配 + 本地索引可信度。
  *
@@ -215,5 +215,136 @@ module.exports = function registerMatchingTests({ test, assert }) {
     assert.strictEqual(toSimplified('Ed Sheeran'), 'Ed Sheeran', '拉丁字母不受影响');
 
     console.log(`      → ${pairs.length} 个繁体歌手名都能归一`);
+  });
+
+  /* ---------- 9) 器乐/伴奏识别不能误伤简介 ---------- */
+  test('器乐/伴奏识别：简介不能被子串误判', () => {
+    const { INSTRUMENTAL_PATTERN, INSTRUMENTAL_PATTERN_DESC } = require('../src/bilibili/bili-api');
+
+    /**
+     * 实测踩过（「大家一起十六强」）：
+     * 正确的官方完整版（240 万播放、时长与原曲只差 1 秒）简介里写着
+     * 「第一版音频使用 **Synthesizer** V 手动制作」——
+     * 而器乐表里有小写 `instrumental`，正则在 "Synthesizer" 上先匹配到了它，
+     * 于是被扣 60 分（37 分 < 门槛 58），**正确答案直接被淘汰**，
+     * 最后播了一个 reaction 视频。
+     *
+     * 修法：扫简介时用弱化表（拉丁词带 \b、去掉单字乐器词）。
+     */
+    const desc = '第一版音频使用Synthesizer V手动制作，完整版使用了A';
+    assert.strictEqual(INSTRUMENTAL_PATTERN_DESC.test(desc), false, 'Synthesizer 不该被判成器乐版');
+    assert.strictEqual(INSTRUMENTAL_PATTERN.test(desc), true, '（记录旧行为：整表扫会误判）');
+
+    // 真的器乐/伴奏版仍然要能识别出来
+    for (const t of ['这是一个伴奏版', '纯音乐无人声', '卡拉OK伴奏', '钢琴版演奏', '吉他指弹']) {
+      assert.strictEqual(INSTRUMENTAL_PATTERN_DESC.test(t), true, `「${t}」应该被识别为器乐/伴奏`);
+    }
+
+    // 单字乐器词不该在长篇简介里乱命中
+    for (const t of ['笛卡尔说过一句话', '这段采样有火车汽笛声', '鼓点很带感']) {
+      assert.strictEqual(INSTRUMENTAL_PATTERN_DESC.test(t), false, `「${t}」不该被判成器乐版`);
+    }
+
+    console.log('      → Synthesizer 不再误判，真伴奏版仍识别');
+  });
+
+  /* ---------- 10) 梗曲要用另一套评判标准 ---------- */
+  test('梗曲：正主该赢过 reaction/切片', () => {
+    const { scoreCandidate } = require('../src/bilibili/bili-api');
+    const cfg = { firstHandOnly: true };
+
+    /**
+     * 实测「大家一起十六强」（英雄联盟 CN 十六强的梗曲）：
+     *   正确版本被连着误判两次（简介"改编自"→ 二创 -80；不是歌手官方号 → 非一手 -35），
+     *   37 分被门槛 58 淘汰，最后播了一个 reaction 视频。
+     *
+     * 梗曲的客观事实不同：原曲**就是** UP 主投稿的，世上没有"歌手官方号"这个一手来源；
+     * 而搜索结果里 reaction/切片占压倒性多数。
+     */
+    const correct = {
+      title: '【补档】CN零杠八单曲《大家一起十六强》完整版',
+      author: '某某',
+      duration: 135,
+      play: 2396354,
+      description: '感谢大家的厚爱…这次完整版由对白老师向我提出了合作的邀请…改编自第一版',
+      tags: [],
+    };
+    const reaction = {
+      title: '苏弟看VCTCN应援小曲《大家一起十六强》，牛人全程都没笑，牛人：还没结束呢！大家，要相信！！！',
+      author: '某切片号',
+      duration: 167,
+      play: 64764,
+      description: '大家多去关注牛人！！！谢谢哞！！！',
+      tags: [],
+    };
+
+    const a = scoreCandidate(correct, '大家一起十六强', cfg);
+    const b = scoreCandidate(reaction, '大家一起十六强', cfg);
+
+    assert.ok(
+      a.score > b.score,
+      `正主该赢过 reaction：正主 ${Math.round(a.score)} vs reaction ${Math.round(b.score)}`
+    );
+    // 正主不该被判成二创/非一手（梗曲豁免）
+    assert.ok(!(a.reasons || []).some((r) => /^二创\/翻唱$/.test(r)), '梗曲正主不该被判二创');
+    assert.ok(!(a.reasons || []).some((r) => /非一手（降权）/.test(r)), '梗曲正主不该被判非一手');
+    // reaction 要被明确压下去
+    assert.ok(
+      (b.reasons || []).some((r) => /reaction|反应|歌名只占/.test(r)),
+      'reaction 该被识别并降权，实际理由：' + (b.reasons || []).join(' / ')
+    );
+
+    console.log(`      → 正主 ${Math.round(a.score)} vs reaction ${Math.round(b.score)}`);
+  });
+
+  /* ---------- 11) reaction 检测的已知盲区 ---------- */
+  test('reaction 检测：标题里歌名占比过低的要被压', () => {
+    const { scoreCandidate } = require('../src/bilibili/bili-api');
+
+    /**
+     * 现有 reaction 检测要求「听/看」紧跟 2~5 个汉字，遇到英文/数字/书名号就失效。
+     * 实测漏掉 4/6 条：
+     *   「苏弟看VCTCN应援小曲《…》」   ← 看后面是英文字母
+     *   「cxy听大家一起16强和…」        ← 听后面直接是歌名
+     *   「【Neekoko】看大家一起十六强！」 ← 没写书名号
+     *
+     * 放宽正则会误伤正常投稿，所以改用「标题里歌名占多少」这个更可靠的信号，
+     * 且只在梗曲场景生效。
+     */
+    const cfg = { firstHandOnly: true };
+    /**
+     * 用**真实的梗曲名**做查询 ——「十六强」会触发梗曲识别。
+     * 不能为了凑覆盖率随便造查询词：梗曲规则只在歌曲本身像梗曲时才生效。
+     */
+    const MEME = '大家一起十六强';
+    const cases = [
+      ['苏弟看VCTCN应援小曲《大家一起十六强》，牛人全程都没笑', '英文挡住'],
+      ['cxy听大家一起十六强和突然的满败', '后面直接是歌名'],
+      ['【Neekoko】看大家一起十六强！NKK直呼耶我们是十六强！！！', '一起看', '没书名号'],
+    ];
+    for (const [title, note] of cases) {
+      const r = scoreCandidate(
+        { title, author: 'x', duration: 167, play: 60000, description: '', tags: [] },
+        MEME,
+        cfg
+      );
+      assert.ok(
+        (r.reasons || []).some((x) => /歌名只占/.test(x)),
+        `「${note}」该被识别为歌名占比过低：${title.slice(0, 26)}（理由 ${(r.reasons || []).join('/')}）`
+      );
+    }
+
+    // 标题基本就是歌名的，要加分而不是被压
+    const good = scoreCandidate(
+      { title: MEME, author: 'x', duration: 135, play: 2000000, description: '', tags: [] },
+      MEME,
+      cfg
+    );
+    assert.ok(
+      (good.reasons || []).some((x) => /标题基本就是这首歌/.test(x)),
+      '标题就是歌名的该加分'
+    );
+
+    console.log('      → 3 条盲区标题都被识别，正主仍被加分');
   });
 };
