@@ -88,6 +88,15 @@ const GROUPS = [
     script: 'test/test-idle-resume.js',
     pick: (out) => (out.match(/通过 (\d+) 项，失败 (\d+) 项/) || []).slice(1).join(' / '),
   },
+  {
+    key: 'idle-startup',
+    name: '空闲垫播·开服即播（不等 delayMs）',
+    script: 'test/test-idle-startup.js',
+    pick: (out) => {
+      const m = out.match(/启动了垫播\s+(\d+)ms/);
+      return m ? '启动后 ' + m[1] + 'ms 出声' : (out.match(/通过 (\d+) 项/) || [])[0] || '';
+    },
+  },
 ];
 
 const want = process.argv.slice(2).filter((x) => !x.startsWith('-'));

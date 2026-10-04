@@ -128,7 +128,7 @@ class IdlePlayer extends EventEmitter {
   start() {
     if (!this.enabled || this.timer) return;
     this.logger.info(
-      `🎵 空闲垫播已启动：没人点歌超过 ${Math.round(this.delayMs / 1000)} 秒就播 ` +
+      `🎵 空闲垫播已启动：启动后立刻开播，之后没人点歌超过 ${Math.round(this.delayMs / 1000)} 秒就继续播 ` +
         `「${this.singers.join('、')}」的合集`
     );
 
@@ -150,8 +150,27 @@ class IdlePlayer extends EventEmitter {
       this.engine.on('state', this._onState);
     }
 
-    // 后台先把合集拉好，避免第一次真的要垫的时候干等十几秒
-    this._loadPlaylist().catch(() => {});
+    /**
+     * 【启动就开播，不等 delayMs】
+     *
+     * 需求（主播原话）：「开启服务时，直接先播放垫播的，有人点歌再进行正常流程」
+     *
+     * 原来的行为是干等 delayMs（默认 8 秒）才垫第一首，而且那 8 秒里
+     * 合集还在后台加载（要 5~20 秒），实际第一声往往要十几秒后才出。
+     * 现在改成：合集一拉好就**立刻**垫第一首，直播间不用空等。
+     *
+     * delayMs 仍然管"被打断之后"的节奏 —— 点歌间隙不该疯狂插歌。
+     */
+    this._loadPlaylist()
+      .then(() => {
+        if (!this.enabled) return;
+        if (this._started) return;
+        this._started = true;
+        this.lastActivityAt = 0; // 让 _tick 立刻认为"够久了"
+        return this._tick();
+      })
+      .catch((err) => this.logger.debug?.(`启动垫播失败：${err.message}`));
+
     this.timer = setInterval(() => {
       this._tick().catch((err) => this.logger.debug?.(`空闲垫播检查出错：${err.message}`));
     }, this.checkEveryMs);
@@ -210,12 +229,21 @@ class IdlePlayer extends EventEmitter {
     if (this.playingIdle) return;
     // 有正在播的歌 → 不插手
     if (this.engine.current) return;
-    // 队列里还有人点的歌（含正在搜索的） → 不插手
+
+    /**
+     * 队列里还有歌（含正在搜索的）→ 不插手。
+     *
+     * 【注意：这里**不能**顺手更新 lastActivityAt】
+     * 实测踩过：垫播自己往队列里塞完歌之后，`playingIdle` 还没置位
+     * （requestSong 还在 await 中），下一次 _tick 就走到这里，
+     * 把空闲计时又往后推了 —— 于是"歌播完后多久回垫播"被算短了 2 秒多。
+     *
+     * 真正的"活动时间"应该在**收到点歌**时更新（noteRealSong），
+     * 而不是在这个只负责"别插手"的判断里更新。
+     */
     const items = (this.engine.queue && this.engine.queue.items) || [];
-    if (items.length) {
-      this.lastActivityAt = Date.now();
-      return;
-    }
+    if (items.length) return;
+
     // 还没安静够久
     if (Date.now() - this.lastActivityAt < this.delayMs) return;
 
