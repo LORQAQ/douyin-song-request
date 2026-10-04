@@ -320,7 +320,7 @@ module.exports = function registerMatchingTests({ test, assert }) {
     const cases = [
       ['苏弟看VCTCN应援小曲《大家一起十六强》，牛人全程都没笑', '英文挡住'],
       ['cxy听大家一起十六强和突然的满败', '后面直接是歌名'],
-      ['【Neekoko】看大家一起十六强！NKK直呼耶我们是十六强！！！', '一起看', '没书名号'],
+      ['【Neekoko】看大家一起十六强！NKK直呼耶我们是十六强！！！', '没书名号'],
     ];
     for (const [title, note] of cases) {
       const r = scoreCandidate(
