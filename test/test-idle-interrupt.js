@@ -42,17 +42,42 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   if (!first) { console.log('❌ 没垫播起来'); process.exit(1); }
   console.log('① 垫播中：' + first.song);
 
-  // ── 测试 1：打断速度 ──
+  // ── 测试 1：打断要**立刻**（不是等搜好才打断）──
+  //
+  // 这里踩过两次坑，必须锁住：
+  //   ① 一开始"等新歌搜好再打断" → 垫播多放 3 秒，主播反馈"没立刻打断"
+  //   ② 更早的版本"先停垫播再搜索" → 中间静音 2~4 秒
+  // 正确行为：**收到点歌就立刻停垫播**（1 毫秒级），
+  // 然后边搜边等，搜好立刻播。中间的静音是搜索固有延迟，不是"打断慢"。
   const t0 = Date.now();
+  let stopAt = 0;
+  const onCmd = (c) => {
+    if (c.cmd === 'stop' && !stopAt) stopAt = Date.now();
+  };
+  engine.on('command', onCmd);
+
   await engine.requestSong({ song: '晴天', nickname: '观众A', userId: 'a', force: true });
+
   let switchedAt = 0;
   for (let i = 0; i < 60; i++) {
     await wait(200);
     const cur = engine.current;
-    if (cur && !cur.idle && /晴天/.test(cur.song)) { switchedAt = Date.now() - t0; break; }
+    if (cur && !cur.idle && /晴天/.test(cur.song)) {
+      switchedAt = Date.now() - t0;
+      break;
+    }
   }
-  console.log('② 打断耗时：' + (switchedAt ? switchedAt + 'ms' : '❌ 60 秒内没切过去'));
-  console.log('   当前：' + (engine.current ? engine.current.song + '（idle=' + engine.current.idle + '）' : '(空)'));
+  engine.off('command', onCmd);
+
+  const stopDelay = stopAt ? stopAt - t0 : -1;
+  console.log('② 打断（停垫播）耗时：' + (stopDelay >= 0 ? stopDelay + 'ms' : '❌ 没收到 stop'));
+  console.log('   新歌开始播：       ' + (switchedAt ? switchedAt + 'ms' : '❌ 60 秒内没切过去'));
+  console.log('   （两者之差 = 搜索耗时，属于固有延迟）');
+  if (stopDelay < 0 || stopDelay > 500) {
+    console.log('   ❌ 打断不及时！应该在收到点歌的瞬间就停垫播（实测 ' + stopDelay + 'ms）');
+  } else {
+    console.log('   ✅ 打断及时（<500ms）');
+  }
   console.log('');
 
   // ── 测试 2：垫播自然播完后还能不能打断 ──
@@ -61,7 +86,10 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
   let second = null;
   for (let i = 0; i < 40; i++) {
     await wait(1000);
-    if (engine.current && engine.current.idle) { second = engine.current; break; }
+    if (engine.current && engine.current.idle) {
+      second = engine.current;
+      break;
+    }
   }
   if (!second) {
     console.log('   ⚠️ 没等到第二次垫播');
@@ -74,13 +102,15 @@ const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
     // 现在再点一首，必须还能打断（这是 playingIdle 卡住的经典场景）
     const t1 = Date.now();
-    const res = await engine.requestSong({ song: '稻香', nickname: '观众B', userId: 'b', force: true });
     let ok2 = 0;
+    await engine.requestSong({ song: '稻香', nickname: '观众B', userId: 'b', force: true });
     for (let i = 0; i < 60; i++) {
       await wait(200);
       const cur = engine.current;
-      if (cur && !cur.idle && /稻香/.test(cur.song)) { ok2 = Date.now() - t1; break; }
-      void res;
+      if (cur && !cur.idle && /稻香/.test(cur.song)) {
+        ok2 = Date.now() - t1;
+        break;
+      }
     }
     console.log('   再次点歌 → ' + (ok2 ? '✅ ' + ok2 + 'ms 切过去' : '❌ 没切过去（current=' + (engine.current ? engine.current.song : '空') + '）'));
   }
