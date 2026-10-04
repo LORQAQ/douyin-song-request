@@ -47,6 +47,40 @@ function launchAudioPlayer(options = {}) {
   if (!exe) throw new Error('没找到 Chrome/Edge，请设置环境变量 CHROME_PATH 指向 chrome.exe');
 
   const profileDir = ensureDir(userDataDir || require('path').resolve(process.cwd(), '.chrome-player-profile'));
+
+  /**
+   * 【单实例保护】已经在跑就不重复开窗口。
+   *
+   * 实测踩过（很严重，表现为"重音/回声"）：每次重启服务都会再开一个播放窗口，
+   * 而 Chrome 对同一个 user-data-dir **不复用已有窗口，会新开一个**；
+   * 旧窗口还连着、还在出声 —— 连续重启几次就有 3~4 路一起响。
+   * 实测当时服务端看到 3 个 audio 页，声音完全糊了。
+   *
+   * 这里用 profile 目录里的 pid 文件判断：进程还活着就直接复用，不再开新的。
+   */
+  const pidFile = require('path').join(profileDir, 'player.pid');
+  const alive = (pid) => {
+    if (!pid) return false;
+    try {
+      process.kill(pid, 0); // 只探测存活，不发信号
+      return true;
+    } catch (e) {
+      return Boolean(e && e.code === 'EPERM'); // 活着但没权限（也算活着）
+    }
+  };
+  try {
+    const fs = require('fs');
+    const saved = Number(String(fs.readFileSync(pidFile, 'utf8')).trim());
+    if (alive(saved)) {
+      if (logger) {
+        logger.info(`专用播放器已在运行（pid ${saved}），不再重复打开 —— 同时开多个会重音`);
+      }
+      return { pid: saved, exe: '', args: [], profileDir, reused: true };
+    }
+  } catch {
+    /* 没有 pid 文件或读不了，继续正常启动 */
+  }
+
   const args = [
     `--user-data-dir=${profileDir}`,
     '--no-first-run',
@@ -59,17 +93,25 @@ function launchAudioPlayer(options = {}) {
 
   const child = spawn(exe, args, { detached: true, stdio: 'ignore' });
   child.unref();
+
+  // 记下 pid，供下次判断"是不是已经在跑"
+  try {
+    require('fs').writeFileSync(pidFile, String(child.pid), 'utf8');
+  } catch {
+    /* ignore */
+  }
+
   if (logger) {
     logger.info(`已启动专用播放器：${exe}`);
     logger.info(`  地址：${url}`);
     logger.info(`  配置目录：${profileDir}`);
     logger.info(
-      '  音频输出：在播放页右上角点「🔈 输出设备」选择虚拟声卡' +
+      '  音频输出：在播放页右上角点「🔈 输出设备」选一次' +
         (deviceName ? `（${deviceName}）` : '') +
-        '，页面会显示当前是否已指向虚拟声卡'
+        '，之后会记住'
     );
   }
-  return { pid: child.pid, exe, args, profileDir };
+  return { pid: child.pid, exe, args, profileDir, reused: false };
 }
 
 /** 用默认浏览器打开控制台 */

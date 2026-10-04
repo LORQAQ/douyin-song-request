@@ -134,7 +134,31 @@ let pendingResumeAt = 0;
   function connect() {
     ws = new WebSocket(wsUrl());
     ws.onopen = () => setDot('on', '已连接');
-    ws.onclose = () => {
+    ws.onclose = (ev) => {
+      /**
+       * 【被新播放页接管】服务端踢掉旧连接时用 4001。
+       * 这时**绝对不能自动重连** —— 否则两个页面会互相踢、永远在重连，
+       * 而且声音一直不干净。直接停掉声音并明确提示，根治"重音/回声"。
+       */
+      if (ev && ev.code === 4001) {
+        try {
+          audio.pause();
+          audio.removeAttribute('src');
+        } catch (e) {
+          /* ignore */
+        }
+        try {
+          $('embed-host').innerHTML = '';
+        } catch (e) {
+          /* ignore */
+        }
+        setDot('off', '已被另一个播放页接管');
+        showToast({
+          text: '这个播放页已停止出声',
+          sub: '另一个播放页接管了（同时开两个会有重音）。要在这里出声就刷新本页。',
+        });
+        return;
+      }
       setDot('', '连接断开，重连中…');
       setTimeout(connect, 2000);
     };

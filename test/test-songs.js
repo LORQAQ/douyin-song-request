@@ -97,6 +97,12 @@ const GROUPS = [
       return m ? '启动后 ' + m[1] + 'ms 出声' : (out.match(/通过 (\d+) 项/) || [])[0] || '';
     },
   },
+  {
+    key: 'dup-audio',
+    name: '重音防治（播放页只留一个 + 启动器单实例）',
+    script: 'test/test-duplicate-audio.js',
+    pick: (out) => (out.match(/通过 (\d+) 项，失败 (\d+) 项/) || []).slice(1).join(' / '),
+  },
 ];
 
 const want = process.argv.slice(2).filter((x) => !x.startsWith('-'));

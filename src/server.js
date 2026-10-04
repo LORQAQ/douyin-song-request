@@ -201,6 +201,37 @@ class WebServer {
 
     this.wss.handleUpgrade(req, socket, head, (ws) => {
       ws.role = url.pathname.includes('audio') ? 'audio' : 'console';
+
+    /**
+     * 【播放页只保留一个】—— 否则会同时出声，听起来是"重音/回声"。
+     *
+     * 实测踩过：每次重启服务都会用专用播放器再开一个窗口，
+     * 而 Chrome 对同一个 user-data-dir **不复用已有窗口，而是新开一个**；
+     * 旧的播放页还连着、还在放 —— 连续重启几次就有 3~4 路同时在响。
+     * （实测当时连了 3 个，声音完全糊了。）
+     *
+     * 所以新播放页一连上，就把旧的 audio 连接踢掉：
+     * 主播看到的始终是「最新的那个窗口在出声」，符合直觉。
+     */
+    if (ws.role === 'audio') {
+      let kicked = 0;
+      for (const other of this.sockets) {
+        if (other === ws || other.role !== 'audio') continue;
+        try {
+          other.send(JSON.stringify({ type: 'toast', toast: { text: '另一个播放页已接管，本页停止出声' } }));
+          other.close(4001, 'superseded-by-newer-audio-page');
+          kicked += 1;
+        } catch {
+          /* ignore */
+        }
+      }
+      if (kicked) {
+        this.logger.warn(
+          `检测到 ${kicked + 1} 个播放页同时连接 —— 已断开旧的 ${kicked} 个（否则会重音）。` +
+            '如果音频页开重了，关掉多余的窗口。'
+        );
+      }
+    }
       ws.clientId = Math.random().toString(36).slice(2, 9);
       ws.isAlive = true;
       this.sockets.add(ws);
