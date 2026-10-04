@@ -82,6 +82,12 @@ const GROUPS = [
       return `通过 ${ok} / 失败 ${bad}`;
     },
   },
+  {
+    key: 'idle-resume',
+    name: '空闲垫播·接着上次位置放（不从头重放）',
+    script: 'test/test-idle-resume.js',
+    pick: (out) => (out.match(/通过 (\d+) 项，失败 (\d+) 项/) || []).slice(1).join(' / '),
+  },
 ];
 
 const want = process.argv.slice(2).filter((x) => !x.startsWith('-'));

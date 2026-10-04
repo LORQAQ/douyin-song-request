@@ -122,6 +122,8 @@
     window.addEventListener(ev, () => markGestureOK(), { once: true, capture: true });
   });
   let progressTimer = null;
+/** 垫播恢复时要 seek 到的秒数（服务端在 payload 里给） */
+let pendingResumeAt = 0;
   let triedBackups = 0;
 
   function wsUrl() {
@@ -243,16 +245,44 @@
     $('dur').textContent = p.durationText || formatDur(p.duration || 0);
     $('mode').textContent = p.mode === 'embed' ? '（音频来自B站官方内嵌播放器）' : (p.audioUrl ? '（直链音频，无画面）' : '');
     setVolume(p.volume != null ? p.volume : volume);
+    // 垫播恢复：记住要对齐的播放位置，等 playDirect 之后应用
+    pendingResumeAt = Number(p.resumeAt) || 0;
 
     // 有音频地址一律走 <audio>（这样才能选输出设备）；
     // 只有真拿不到地址时才退回官方内嵌播放器（iframe，输出设备无法单独指定）。
     if (p.audioUrl) {
       p.mode = 'direct';
       playDirect(p);
+      // 有续播位置就对齐过去（放在 playDirect 之后，src 已设好）
+      if (pendingResumeAt > 1) applyResumePosition(pendingResumeAt);
     } else {
       p.mode = 'embed';
       playEmbed(p);
     }
+  }
+
+  /**
+   * 【接着上次的位置放】空闲垫播恢复时用。
+   *
+   * 服务端会在 payload 里带 `resumeAt`（秒）。等 metadata 到了再 seek ——
+   * 太早设 currentTime 会被还没解析出时长的播放器忽略掉（这个坑很常见）。
+   */
+  function applyResumePosition(seconds) {
+    const at = Number(seconds);
+    if (!Number.isFinite(at) || at <= 1) return;
+    const doSeek = () => {
+      try {
+        // 留 2 秒余量，避免刚好卡在结尾导致立刻 ended
+        const dur = audio.duration || current?.duration || 0;
+        const target = dur ? Math.min(at, Math.max(0, dur - 2)) : at;
+        audio.currentTime = target;
+        showToast({ text: '接着上次的位置继续', sub: formatDur(target) });
+      } catch (e) {
+        /* seek 失败不影响播放 */
+      }
+    };
+    if (audio.readyState >= 1) doSeek();
+    else audio.addEventListener('loadedmetadata', doSeek, { once: true });
   }
 
   function stateToPayload(cur) {
@@ -449,11 +479,24 @@
 
   function startProgress() {
     if (progressTimer) clearInterval(progressTimer);
+    let lastReported = 0;
     progressTimer = setInterval(() => {
       const dur = (current && current.duration) || audio.duration || 0;
       const cur = audio.currentTime || 0;
       $('cur').textContent = formatDur(cur);
       if (dur) $('bar').style.width = Math.min(100, (cur / dur) * 100) + '%';
+
+      /**
+       * 【上报播放进度】—— 空闲垫播"接着放"要用它。
+       *
+       * 垫播被打断（有人点歌）时，服务端需要知道刚放到第几秒，
+       * 这样等下次空闲时可以 seek 回去接着放，而不是从头重放。
+       * 每 1 秒报一次（500ms 的界面刷新频率上报太频繁，没必要）。
+       */
+      if (current && current.id && Math.abs(cur - lastReported) >= 1) {
+        lastReported = cur;
+        send({ type: 'progress', id: current.id, time: cur });
+      }
     }, 500);
   }
 

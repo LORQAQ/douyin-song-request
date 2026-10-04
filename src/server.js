@@ -435,6 +435,15 @@ class WebServer {
         case 'ended':
           this.engine.onEnded(msg.id);
           break;
+        /**
+         * 播放页上报的播放进度（每约 1 秒一次）。
+         *
+         * 用途：空闲垫播被打断后，下次空闲要**接着上次的位置放**，
+         * 而不是从头重放。位置记在 entry.resumeAt 上。
+         */
+        case 'progress':
+          this.engine.onProgress(msg.id, msg.time);
+          break;
         case 'playError':
           this.engine.onError(msg.id, msg.message);
           break;

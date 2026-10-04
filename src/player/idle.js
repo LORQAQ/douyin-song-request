@@ -58,7 +58,56 @@ class IdlePlayer extends EventEmitter {
     /** 上一次"有动静"的时间（有人点歌 / 有歌在播 / 刚垫过） */
     this.lastActivityAt = Date.now();
     /** 统计 */
-    this.stats = { filled: 0, skippedForRealSong: 0, loadFailed: 0 };
+    this.stats = { filled: 0, skippedForRealSong: 0, loadFailed: 0, resumed: 0 };
+
+    /**
+     * 【被打断的垫播】= 中断那一刻的曲目 + 播到第几秒。
+     *
+     * 需求（主播原话）：「没人点歌切回去的时候不要从头开始放，要接着断开的地方接着放」。
+     * 有人点歌时垫播会被跳过，这里把"哪个视频 + 播到几秒"记下来，
+     * 下次空闲时先恢复它（seek 回去接着放），放完了再继续走列表。
+     */
+    this.interrupted = null;
+  }
+
+  /** 播放页每上报一次进度，就把位置更新到当前垫播记录上 */
+  noteProgress(entry, time) {
+    if (!entry || !entry.idle) return;
+    this.interrupted = {
+      bvid: entry.pick && entry.pick.bvid,
+      page: entry.pick && entry.pick.page,
+      cid: entry.pick && entry.pick.cid,
+      song: entry.song,
+      resumeAt: Number(time) || 0,
+      at: Date.now(),
+    };
+  }
+
+  /**
+   * 垫播被打断（或被跳过）时调用：把位置和视频信息存下来。
+   *
+   * 只在"确实放过一段"时才记（resumeAt > 3 秒）——
+   * 刚开始就切走的话，接着放还不如从头放。
+   */
+  rememberInterrupted(entry) {
+    if (!entry || !entry.idle) return;
+    const at = Number(entry.resumeAt) || 0;
+    if (at <= 3) {
+      // 才放了几秒，没必要续播
+      this.interrupted = null;
+      return;
+    }
+    this.interrupted = {
+      bvid: entry.pick && entry.pick.bvid,
+      page: entry.pick && entry.pick.page,
+      cid: entry.pick && entry.pick.cid,
+      song: entry.song,
+      resumeAt: at,
+      at: Date.now(),
+    };
+    this.logger.info(
+      `⏸ 垫播被打断，记住位置：${entry.song} 第 ${Math.round(at)} 秒（下次空闲接着放）`
+    );
   }
 
   applyConfig(config = {}) {
@@ -173,9 +222,34 @@ class IdlePlayer extends EventEmitter {
     await this._fillOnce();
   }
 
-  /** 垫一首 */
+  /** 垫一首（如果是被打断的那首，先接着放） */
   async _fillOnce() {
-    const track = await this._nextTrack();
+    /**
+     * 【优先恢复被打断的那首】需求：「不要从头开始放，要接着断开的地方接着放」。
+     *
+     * 只要有 interrupted 记录，就先恢复它（带 resumeAt 让播放页 seek 回去）；
+     * 恢复之后清掉记录，下次再空闲就正常走列表。
+     */
+    let track = null;
+    let resumeAt = 0;
+    const resumable = this.interrupted;
+    if (resumable && resumable.bvid) {
+      track = {
+        bvid: resumable.bvid,
+        page: resumable.page,
+        cid: resumable.cid,
+        part: resumable.song,
+        collectionTitle: '',
+      };
+      resumeAt = Number(resumable.resumeAt) || 0;
+      this.interrupted = null; // 只恢复一次，避免反复回到同一首
+      this.stats.resumed += 1;
+      this.logger.info(
+        `▶ 接着上次的位置放：${resumable.song} 第 ${Math.round(resumeAt)} 秒`
+      );
+    } else {
+      track = await this._nextTrack();
+    }
     if (!track) return;
 
     this.playingIdle = true;
@@ -183,7 +257,11 @@ class IdlePlayer extends EventEmitter {
     this.stats.filled += 1;
 
     const song = track.part || track.collectionTitle || '空闲垫播';
-    this.logger.info(`🎵 空闲垫播：${song}${track.collectionTitle ? '（' + track.collectionTitle.slice(0, 18) + '）' : ''}`);
+    if (!resumeAt) {
+      this.logger.info(
+        `🎵 空闲垫播：${song}${track.collectionTitle ? '（' + track.collectionTitle.slice(0, 18) + '）' : ''}`
+      );
+    }
 
     /**
      * 【必须直接指定视频】不能走「按歌名搜索」那条路 ——
@@ -200,6 +278,7 @@ class IdlePlayer extends EventEmitter {
         force: true,
         direct: { bvid: track.bvid, page: track.page, cid: track.cid },
         idle: true,
+        resumeAt,
       })
       .catch((err) => {
         this.logger.debug?.(`垫播入队失败：${err.message}`);

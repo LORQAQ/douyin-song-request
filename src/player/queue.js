@@ -61,7 +61,17 @@ class SongQueue {
   }
 
   /** 新点歌：先入队占位，稍后补上搜索结果 */
-  createEntry({ song, nickname, userId, message = '', artist = '', title = '', direct = null, idle = false }) {
+  createEntry({
+    song,
+    nickname,
+    userId,
+    message = '',
+    artist = '',
+    title = '',
+    direct = null,
+    idle = false,
+    resumeAt = 0,
+  }) {
     const entry = {
       id: uid('song'),
       song,
@@ -83,6 +93,12 @@ class SongQueue {
       direct: direct && direct.bvid ? direct : null,
       /** 是不是空闲垫播塞进来的（有人点歌时优先打断它） */
       idle: Boolean(idle),
+      /**
+       * 从第几秒开始放（秒，0 = 从头）。
+       * 空闲垫播被打断后恢复时用 —— 需求是「接着断开的地方接着放」。
+       * 播放页收到后会等 metadata 就绪再 seek 过去。
+       */
+      resumeAt: Number(resumeAt) || 0,
       status: STATUS.SEARCHING,
       createdAt: Date.now(),
       startedAt: 0,

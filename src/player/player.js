@@ -128,6 +128,8 @@ class PlaybackEngine extends EventEmitter {
     title = '',
     direct = null,
     idle = false,
+    /** 从第几秒开始放（空闲垫播恢复时用；0 = 从头） */
+    resumeAt = 0,
   }) {
     const clean = String(song || '').trim();
     if (!clean) return { ok: false, reason: 'empty' };
@@ -143,7 +145,17 @@ class PlaybackEngine extends EventEmitter {
       }
     }
 
-    const entry = this.queue.createEntry({ song: clean, nickname, userId, message, artist, title, direct, idle });
+    const entry = this.queue.createEntry({
+      song: clean,
+      nickname,
+      userId,
+      message,
+      artist,
+      title,
+      direct,
+      idle,
+      resumeAt,
+    });
     this.stats.requests += 1;
 
     const isInterrupt = this.mode === 'interrupt';
@@ -475,6 +487,12 @@ class PlaybackEngine extends EventEmitter {
       mode: 'embed',
       volume: Number(playback.volume ?? 0.8),
       startedAt: Date.now(),
+      /**
+       * 【接着上次的位置放】空闲垫播被打断后恢复时用。
+       * 播放页拿到这个值会等 metadata 就绪后 seek 过去。
+       * 普通点歌没有这个字段（=0），从头播。
+       */
+      resumeAt: Number(entry.resumeAt) || 0,
     };
 
     const wantDirect = playback.useDirectStream !== false && playback.audioMode !== false;
@@ -551,11 +569,42 @@ class PlaybackEngine extends EventEmitter {
     return this.finishCurrent('ended');
   }
 
+  /**
+   * 播放页上报播放进度（秒）。
+   *
+   * 【为什么需要】空闲垫播被打断后，下次空闲要**接着上次的位置放**。
+   * 位置记在 entry.resumeAt 上，被打断时由 IdlePlayer 取走保存。
+   *
+   * 只在当前这首歌上报时记录（消息可能晚到，id 对不上就忽略）。
+   */
+  onProgress(id, time) {
+    const cur = this.current;
+    if (!cur) return;
+    if (id && cur.id !== id) return;
+    const t = Number(time);
+    if (!Number.isFinite(t) || t < 0) return;
+    cur.resumeAt = t;
+    // 垫播那首还要额外记着，方便打断后恢复
+    if (cur.idle && this.idlePlayer && typeof this.idlePlayer.noteProgress === 'function') {
+      this.idlePlayer.noteProgress(cur, t);
+    }
+  }
+
   finishCurrent(reason = 'ended') {
     const entry = this.current;
     if (!entry) return null;
     // 无论是正常播完还是跳过，都要把「兜底结束」定时器清掉，不然它会晚点再触发一次
     this._clearDurationFallback();
+
+    /**
+     * 【被打断的垫播要记住位置】有人点歌时垫播会被跳过，
+     * 这里把"播到第几秒 + 是哪个视频"交给 IdlePlayer 存起来，
+     * 下次空闲就能接着放而不是从头重放。
+     */
+    if (entry.idle && this.idlePlayer && typeof this.idlePlayer.rememberInterrupted === 'function') {
+      this.idlePlayer.rememberInterrupted(entry);
+    }
+
     entry.status = reason === 'ended' ? STATUS.DONE : STATUS.SKIPPED;
     entry.playedMs = Date.now() - entry.startedAt;
     this.filter.releaseUser(entry.userId);
