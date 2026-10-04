@@ -1076,6 +1076,85 @@ class BilibiliClient {
   }
 
   /**
+   * 试着给「连写的拉丁歌名」断词：`shapeofyou` → `Shape Of You`。
+   *
+   * 【为什么要断词】观众常把空格删干净，搜索引擎对这种长串完全没辙，
+   * 而程序也猜不出边界。实测「点歌 alanwaleralone」会退化成只匹配到内含的
+   * "alone"，选中 Rentz 那首同名的《Alone》。
+   *
+   * 【怎么断】靠一个**常见英文词表**做贪心最长匹配（从前往后）：
+   * 遇到认识的词就切一刀。词表覆盖英文歌名和常见英文人名里高频出现的部分，
+   * 认不出来的碎片就整体拼回去，不硬切。
+   *
+   * 返回切好的词组（每段首字母大写），或 null（切不出来）。
+   */
+  _splitConcatenated(raw) {
+    const s = String(raw || '').toLowerCase();
+    if (!/^[a-z]{10,}$/.test(s)) return null;
+
+    // 常见英文词（歌名 + 人名里高频的）
+    const WORDS = new Set([
+      'a','an','the','and','or','of','in','on','at','to','for','with','from','by','my','me','you','your','i',
+      'is','are','was','were','be','been','do','does','did','not','no','yes','all','so','if','it','its',
+      'this','that','these','those','there','here','when','where','why','how','what','who','which',
+      'one','two','three','last','first','next','new','old','good','bad','big','small','long','short',
+      'love','lover','heart','hearts','alone','stay','hello','sorry','fire','rain','star','stars','moon','sun',
+      'dream','dreams','way','back','down','up','over','out','away','home','life','world','time','night','day',
+      'girl','boy','baby','man','woman','friend','friends','eyes','eye','hand','hands','mind','soul','body',
+      'dance','dancing','sing','singing','song','songs','music','play','playing','run','running','walk','walking',
+      'feel','feeling','know','knowing','want','wanna','need','give','take','make','made','come','coming','go','going',
+      'see','seeing','look','looking','say','saying','tell','telling','let','get','got','keep','hold','held',
+      'shape','shapes','shadow','light','lights','dark','blue','red','black','white','gold','golden','silver',
+      'sweet','bitter','cold','hot','warm','young','free','true','real','right','wrong','better','best','never','ever',
+      'alan','walker','marshmello','heart','band','weeknd','taylor','swift','ed','sheeran','adele','justin','bieber',
+      'rihanna','zedd','kygo','eminem','madonna','lady','gaga','bruno','mars','ariana','grande','billie','eilish',
+      'beyond','queen','nirvana','metallica','eagles','carpenters','beatles','abba','westlife','backstreet',
+      'fool','fools','garden','maneater','sailing','yesterday','once','more','hotel','california','blinding',
+      // 高频歌名词（实测 onellastkiss / taylorswiftlovestory / zeddstay 因为缺词断不出来）
+      'kiss','kisses','story','stories','gone','goodbye','forever','together','remember','forget','waiting',
+      'without','nothing','something','anything','everything','everybody','somebody','nobody','someone',
+      'beautiful','wonderful','perfect','crazy','happy','sad','lonely','tired','lost','found','broken',
+      'tonight','tomorrow','summer','winter','spring','autumn','season','seasons','mountain','ocean','river',
+      'sky','cloud','clouds','wind','snow','flower','flowers','tree','trees','road','street','city','town',
+      'king','queen','prince','princess','angel','devil','ghost','monster','hero','heroes','legend','legends',
+      'left','right','side','sides','front','behind','inside','outside','under','above','between','around',
+      'call','calling','fall','falling','fly','flying','cry','crying','smile','smiling','laugh','laughing',
+      'break','breaking','fix','fixing','change','changing','start','starting','stop','stopping','leave','leaving',
+      'open','close','turn','turning','move','moving','touch','touching','taste','smell','sound','sounds',
+      'first','second','third','million','billion','thousand','hundred','number','numbers','count','counting',
+      'money','gold','diamond','diamonds','pearl','pearls','silver','bronze','iron','steel','stone','stones',
+      'war','peace','power','glory','honor','freedom','justice','truth','lie','lies','secret','secrets',
+      'eden','paradise','heaven','hell','church','prayer','pray','god','goddess','sin','sinner','saint',
+      'blood','bone','bones','skin','flesh','breath','voice','voices','word','words','name','names','face','faces',
+    ]);
+
+    // 从前往后贪心最长匹配
+    // 注意：`a` / `an` 这种极短的词会让贪心走进死胡同
+    // （`alanwaleralone` 先匹配到 `a`，剩下 `lan…` 认不出就全盘失败），
+    // 所以用**递归回溯**找一条能切到底的路，而不是一条道走到黑。
+    const MIN_WORD = 2; // 不认单字母词（`a` / `i`），它们只会制造歧义
+
+    /** 深度优先找完整切分 */
+    const solve = (pos, acc) => {
+      if (pos >= s.length) return acc;
+      if (acc.length >= 5) return null; // 最多 5 段（歌手名 + 歌名足够了）
+      for (let len = Math.min(14, s.length - pos); len >= MIN_WORD; len -= 1) {
+        const w = s.slice(pos, pos + len);
+        if (!WORDS.has(w)) continue;
+        const rest = solve(pos + len, acc.concat(w));
+        if (rest) return rest;
+      }
+      return null;
+    };
+
+    const parts = solve(0, []);
+    if (!parts || parts.length < 2) return null;
+
+    // 每段首字母大写，模仿正规写法（对搜索更友好）
+    return parts.map((w) => w.charAt(0).toUpperCase() + w.slice(1));
+  }
+
+  /**
    * 给 scoreCandidate 用的配置：在 config 上挂一份**可信 UP 主列表**。
    *
    * scoreCandidate 是纯函数、拿不到 client 实例，但白名单 UP 主需要豁免
@@ -2151,6 +2230,55 @@ class BilibiliClient {
           }
         } catch (err) {
           this.logger.debug(`白名单合集查找失败（忽略）：${err.message}`);
+        }
+      }
+    }
+
+    /**
+     * 【第一步之四·连写的拉丁歌名/歌手名】
+     *
+     * 观众经常把空格全删掉：「alanwaleralone」= Alan Walker + Alone，
+     * 「shapeofyou」= Shape of You。这时候搜索引擎完全搜不到，
+     * 而程序也猜不出该怎么断词。
+     *
+     * 实测「点歌 alanwaleralone」会退化到只匹配到内含的 "alone"，
+     * 于是选中了 Rentz 那首同名的《Alone》—— 和观众想要的完全不是一个歌手。
+     *
+     * 做法：**用搜索来试断词**。把长串按 2~3 段切开、
+     * 每段首字母大写（模仿正规写法），搜一次，看能不能拿到歌词覆盖率高的候选。
+     * 谁能搜出真正匹配这首歌的结果，就采用那个断词。
+     *
+     * 限制：只在「无空格 + 纯拉丁 + 长度 >= 10」时尝试，最多试 4 次，
+     * 避免给正常的中文歌名增加无谓的搜索开销。
+     */
+    {
+      const raw = String(song || '').trim();
+      const isConcatenatedLatin = /^[a-z]{10,}$/i.test(raw) && !raw.includes(' ');
+      if (isConcatenatedLatin && this.config.splitConcatenatedSearch !== false) {
+        const words = this._splitConcatenated(raw);
+        if (words) {
+          const alt = words.join(' ');
+          this.logger.info(`🔤「${raw}」没有空格，试着按「${alt}」再搜一次`);
+          try {
+            const altRes = await this._searchRawWithKeyword(alt, alt);
+            const best = (altRes.candidates || [])[0];
+            // 只有当搜出来的东西确实像这首歌时才采用（避免越试越错）
+            const fitsSong = best && (best.titleMatch === 'exact' || best.titleMatch === 'prefix');
+            if (fitsSong) {
+              const seen = new Set((search.candidates || []).map((c) => c.bvid));
+              const extra = (altRes.candidates || []).filter((c) => !seen.has(c.bvid));
+              if (extra.length) {
+                this.logger.info(`🔤 断词「${alt}」有效，并入 ${extra.length} 个候选`);
+                search = { ...search, candidates: (search.candidates || []).concat(extra) };
+                // 断言记录一下，供日志/排查
+                search = { ...search, concatSplit: alt };
+              }
+            } else {
+              this.logger.debug(`🔤 断词「${alt}」没搜到可信结果，放弃`);
+            }
+          } catch (err) {
+            this.logger.debug(`连写断词搜索失败（忽略）：${err.message}`);
+          }
         }
       }
     }

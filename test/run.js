@@ -636,6 +636,17 @@ test('「歌手 - 歌名」是唯一的歌手指定格式', () => {
     ['点歌 Alone-Heart', 'Alone', 'Heart'],
     ['点歌 Alone – Heart', 'Alone', 'Heart'], // en dash
     ['点歌 Alone — Heart', 'Alone', 'Heart'], // em dash
+    /**
+     * 【歌手名内部有空格 + 横线两边没空格】
+     * 实测观众常这么打：「alan walker-alone」「taylor swift-love story」。
+     * 横线只出现一次，所以切分没有歧义 —— 左边全是歌手、右边全是歌名
+     * （歌手名本来就可以有空格，不能因为歌手名含空格就放弃解析）。
+     */
+    ['点歌 alan walker-alone', 'alan walker', 'alone'],
+    ['点歌 Alan Walker-Alone', 'Alan Walker', 'Alone'],
+    ['点歌 alan walker - alone', 'alan walker', 'alone'],
+    ['点歌 taylor swift-love story', 'taylor swift', 'love story'],
+    ['点歌 周杰伦-晴天', '周杰伦', '晴天'],
   ];
   for (const [msg, wantArtist, wantTitle] of cases) {
     const r = parseRequest(msg, cfg);
