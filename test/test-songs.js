@@ -72,6 +72,16 @@ const GROUPS = [
     script: 'test/test-idle-play.js',
     pick: (out) => (out.match(/垫播次数\s*:\s*(\d+)/) || [])[1] + ' 次垫播',
   },
+  {
+    key: 'idle-interrupt',
+    name: '空闲垫播·打断边界（自然播完/手动跳过后还能打断）',
+    script: 'test/test-idle-interrupt.js',
+    pick: (out) => {
+      const ok = (out.match(/✅/g) || []).length;
+      const bad = (out.match(/❌/g) || []).length;
+      return `通过 ${ok} / 失败 ${bad}`;
+    },
+  },
 ];
 
 const want = process.argv.slice(2).filter((x) => !x.startsWith('-'));

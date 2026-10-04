@@ -82,6 +82,25 @@ class IdlePlayer extends EventEmitter {
       `🎵 空闲垫播已启动：没人点歌超过 ${Math.round(this.delayMs / 1000)} 秒就播 ` +
         `「${this.singers.join('、')}」的合集`
     );
+
+    /**
+     * 【playingIdle 必须跟着引擎实际状态走】
+     *
+     * 原来只在 _fillOnce 里置 true、在 interruptForRealSong 里置 false。
+     * 于是垫播那首**自然播完**（或被主播手动跳过）时，标记一直是 true ——
+     * 之后 interruptForRealSong 一看 playingIdle 就直接 return，
+     * 下次有人点歌就"打不断"了。
+     *
+     * 这里订阅引擎的 state 事件，以 `current.idle` 为唯一事实来源。
+     */
+    if (this.engine && typeof this.engine.on === 'function') {
+      this._onState = () => {
+        const cur = this.engine.current;
+        this.playingIdle = Boolean(cur && cur.idle);
+      };
+      this.engine.on('state', this._onState);
+    }
+
     // 后台先把合集拉好，避免第一次真的要垫的时候干等十几秒
     this._loadPlaylist().catch(() => {});
     this.timer = setInterval(() => {
@@ -95,6 +114,11 @@ class IdlePlayer extends EventEmitter {
       clearInterval(this.timer);
       this.timer = null;
     }
+    if (this._onState && this.engine && typeof this.engine.off === 'function') {
+      this.engine.off('state', this._onState);
+      this._onState = null;
+    }
+    this.playingIdle = false;
   }
 
   /** 有人点歌了 —— 记一下时间，并打断正在播的垫播 */
@@ -108,11 +132,17 @@ class IdlePlayer extends EventEmitter {
    *
    * 只对**垫播**生效：观众自己点的歌不会被别人打断
    * （那是 interrupt 模式该管的事，不归这里）。
+   *
+   * 注意判断条件是 `engine.current.idle`，不是自己缓存的 playingIdle ——
+   * 状态可能因为自然播完/手动跳过而与缓存不一致（这个坑踩过）。
    */
   interruptForRealSong() {
-    if (!this.playingIdle) return false;
     const cur = this.engine && this.engine.current;
-    if (!cur || !cur.idle) return false;
+    const isIdleNow = Boolean(cur && cur.idle);
+    // 用引擎的实际状态纠正缓存
+    this.playingIdle = isIdleNow;
+    if (!isIdleNow) return false;
+
     this.playingIdle = false;
     this.stats.skippedForRealSong += 1;
     this.logger.info('⏭ 有人点歌，打断垫播');

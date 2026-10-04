@@ -146,13 +146,6 @@ class PlaybackEngine extends EventEmitter {
     const entry = this.queue.createEntry({ song: clean, nickname, userId, message, artist, title, direct, idle });
     this.stats.requests += 1;
 
-    /**
-     * 【告诉空闲垫播"有人点歌了"】
-     * 垫播会立刻打断自己正在放的那首，把位置让给观众点的歌。
-     * 垫播自己入队时不发这个事件（否则会自己打断自己）。
-     */
-    if (!idle) this.emit('song-requested', { song: clean, nickname });
-
     const isInterrupt = this.mode === 'interrupt';
     if (isInterrupt) this.queue.unshift(entry);
     else this.queue.push(entry);
@@ -161,12 +154,36 @@ class PlaybackEngine extends EventEmitter {
     this.emit('log', { level: 'info', text: `${nickname} 点歌 ${clean}` });
     this.broadcastState();
 
+    /**
+     * 【先把新歌解析好，再决定要不要打断】
+     *
+     * 实测踩过：原来是**一收到点歌就**通知垫播打断（engine.skip()），
+     * 但那时新歌才刚开始搜索（要 2~4 秒），于是：
+     *   垫播停了 → 静音 2~4 秒 → 才播观众点的歌
+     * 而且 `this.current` 已被清空，下面那段 playNext 的判断也跟着乱。
+     * 主播的体感就是"没有立刻打断"，直播间还多了一段空档。
+     *
+     * 正确顺序：等 `resolveEntry` 把新歌找好、能播了，再切过去。
+     * 垫播那首多放几秒无所谓（反正本来就在放），静音空档才是问题。
+     */
+    const notifyIdle = () => {
+      if (!idle) this.emit('song-requested', { song: clean, nickname });
+    };
+
     // 搜索（异步补全，不阻塞其它点歌）
-    this.resolveEntry(entry).catch((err) => {
-      this.logger.error(`解析点歌失败「${clean}」：`, err.message);
-    });
+    this.resolveEntry(entry)
+      .then(() => {
+        notifyIdle();
+        // 解析完可能没人接手（比如队列模式下当前空了），补一次推进
+        this._maybePlay();
+        this.broadcastStateNow();
+      })
+      .catch((err) => {
+        this.logger.error(`解析点歌失败「${clean}」：`, err.message);
+      });
 
     if (isInterrupt && this.current && this.current.status === STATUS.PLAYING) {
+      // 打断模式：观众点的歌本来就该立刻插队（这里的 skip 是模式语义，不是垫播打断）
       this.logger.info('打断模式：切到新点歌');
       this.skip('新点歌打断');
     } else if (!this.current) {
