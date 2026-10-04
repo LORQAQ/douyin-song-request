@@ -1,4 +1,4 @@
-'use strict';
+﻿'use strict';
 /**
  * 端到端实测「歌手 - 歌名」格式。
  *
@@ -13,7 +13,7 @@ try { fs.unlinkSync(LOG); } catch {}
 const log = (s) => { console.log(s); fs.appendFileSync(LOG, s + '\n', 'utf8'); };
 
 const { loadConfig } = require('../src/config');
-const { BilibiliClient } = require('../src/bilibili/bili-api');
+const { BilibiliClient, toSimplified } = require('../src/bilibili/bili-api');
 const { Logger } = require('../src/lib/logger');
 const { parseRequest } = require('../src/danmaku/parser');
 
@@ -66,10 +66,19 @@ const CASES = [
       continue;
     }
     const p = r.pick;
-    const both = (String(p.title || '') + ' ' + String(p.owner || '')).toLowerCase();
-    const artistHit = both.includes(wantArtist.toLowerCase());
+    /**
+     * 【比对前要繁简归一 + 统一大小写】
+     *
+     * 观众用繁体点（「米津玄師」），B站标题写简体（「米津玄师」）——
+     * 直接字符串比对会误判成"没匹配到歌手"，其实选得完全正确。
+     * 用项目里现成的 toSimplified() 归一，和匹配逻辑保持一致。
+     */
+    const norm = (x) => toSimplified(String(x || '')).toLowerCase();
+    const both = norm(String(p.title || '') + ' ' + String(p.owner || ''));
+    const artistHit = both.includes(norm(wantArtist));
     const durHit = Math.abs((Number(p.duration) || 0) - wantDur) <= 25;
     const ok = artistHit && durHit;
+
     if (ok) good += 1;
     log('   ' + (ok ? '✅' : '⚠️ ') + Math.round(p.score) + '分  ' + ms + 'ms  ' + (p.bvid || ''));
     log('      ' + String(p.title || '').slice(0, 62));

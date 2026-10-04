@@ -172,4 +172,48 @@ module.exports = function registerMatchingTests({ test, assert }) {
 
     console.log('      → author/owner 两个字段名都能匹配');
   });
+
+  /* ---------- 8) 繁简归一要覆盖歌手名用字 ---------- */
+  test('繁体歌名/歌手名要能归一到简体（含日文汉字）', () => {
+    const { toSimplified } = require('../src/bilibili/bili-api');
+
+    /**
+     * 实测踩过：「点歌 米津玄師 - Lemon」里观众写繁体「師」，
+     * B站标题写简体「师」，而转换表没收录 `師` →
+     * 归一后两边仍然不同 → 歌手匹配判失败。
+     *
+     * 日文汉字和繁体中文共用很多字形，所以日本歌手名也会踩同样的坑。
+     * 这里锁住一批**人名高频字**，防止转换表被删改后又漏掉。
+     */
+    const pairs = [
+      ['米津玄師', '米津玄师'],
+      ['中島美嘉', '中岛美嘉'],
+      ['黃家駒', '黄家驹'],
+      ['蕭敬騰', '萧敬腾'],
+      ['林俊傑', '林俊杰'],
+      ['周傳雄', '周传雄'],
+      ['鳳凰傳奇', '凤凰传奇'],
+      ['張學友', '张学友'],
+      ['陳奕迅', '陈奕迅'],
+      ['劉德華', '刘德华'],
+      ['孫燕姿', '孙燕姿'],
+      ['鄧紫棋', '邓紫棋'],
+      ['蘇打綠', '苏打绿'],
+      ['薛之謙', '薛之谦'],
+      ['梁靜茹', '梁静茹'],
+    ];
+    const bad = [];
+    for (const [trad, simp] of pairs) {
+      const got = toSimplified(trad);
+      if (got !== simp) bad.push(`${trad} → ${got}（期望 ${simp}）`);
+    }
+    assert.deepStrictEqual(bad, [], '这些繁体名没归一到简体：\n        ' + bad.join('\n        '));
+
+    // 本来就是简体的不能被改坏
+    assert.strictEqual(toSimplified('米津玄师'), '米津玄师', '简体输入要保持原样');
+    assert.strictEqual(toSimplified('周杰伦'), '周杰伦', '简体输入要保持原样');
+    assert.strictEqual(toSimplified('Ed Sheeran'), 'Ed Sheeran', '拉丁字母不受影响');
+
+    console.log(`      → ${pairs.length} 个繁体歌手名都能归一`);
+  });
 };
